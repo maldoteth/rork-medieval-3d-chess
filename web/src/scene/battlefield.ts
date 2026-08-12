@@ -4,7 +4,7 @@ import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js
 import type { ArenaLook } from "./arena";
 import { ARENA_LOOKS, DEFAULT_ARENA } from "./arena";
 import { QUALITY_SETTINGS, type QualityPreset } from "./quality";
-import { clothTexture, mudTexture, smokeTexture, sparkTexture } from "./textures";
+import { clothTexture, mudTexture, normalFromCanvas, smokeTexture, sparkTexture } from "./textures";
 
 /**
  * Everything outside the hall walls: the churned war plain, the two siege
@@ -59,14 +59,48 @@ const MAX_ASH = 220;
 const MAX_SMOKE = 90;
 const CROW_COUNT = 11;
 
+interface SkyUniforms {
+  zenith: { value: THREE.Color };
+  horizon: { value: THREE.Color };
+  ember: { value: THREE.Color };
+  haze: { value: THREE.Color };
+  sunColor: { value: THREE.Color };
+  cloudColor: { value: THREE.Color };
+  sunDir: { value: THREE.Vector3 };
+  sunSize: { value: number };
+  sunGlow: { value: number };
+  cloudAmount: { value: number };
+  cloudSpeed: { value: number };
+  uTime: { value: number };
+}
+
+/**
+ * One range of mountains, kept around so the theme can repaint it.
+ *
+ * `rise` is each vertex's height within this range's own peaks, 0 at the foot
+ * and 1 at the highest summit — that is what the snowline is compared against.
+ * `distance` is how far back the range stands, 0 nearest and 1 farthest, which
+ * is what decides how much of the air between here and there is painted onto
+ * it. Both are baked once; only the colours are rewritten on a map change.
+ */
+interface RidgeLayer {
+  geometry: THREE.BufferGeometry;
+  rise: Float32Array;
+  distance: number;
+  rock: THREE.Color;
+  scree: THREE.Color;
+}
+
 export class Battlefield {
   readonly group = new THREE.Group();
 
   /** Theme-driven handles: sky gradient, ground, fires and drifting particles. */
-  private skyUniforms: { zenith: { value: THREE.Color }; horizon: { value: THREE.Color }; ember: { value: THREE.Color } } | null =
-    null;
+  private skyUniforms: SkyUniforms | null = null;
   private ridgeMaterials: THREE.MeshBasicMaterial[] = [];
-  private plainMaterial: THREE.MeshStandardMaterial | null = null;
+  /** One entry per range, so the snowline and the haze can be repainted. */
+  private ridges: RidgeLayer[] = [];
+  /** The plain's two earth tones, blended across it by a baked attribute. */
+  private plainTones: { a: { value: THREE.Color }; b: { value: THREE.Color } } | null = null;
   private pyreFlameMaterials: THREE.MeshBasicMaterial[] = [];
   private glowMaterials: THREE.MeshBasicMaterial[] = [];
   private troopMaterials: THREE.MeshStandardMaterial[] = [];
@@ -130,19 +164,46 @@ export class Battlefield {
 
   // ------------------------------------------------------------------- sky
 
-  /** Dusk battle sky: indigo zenith bleeding into an ember-lit smoke band. */
+  /**
+   * The sky: a vertical gradient, a bank of drifting cloud, a haze band the
+   * ground rises out of, and one sun.
+   *
+   * The sun is the point of it. The old dome was a gradient with a warm smear
+   * hard-coded to one side of the world, which meant the brightest part of the
+   * sky and the direction every shadow on the board fell in had nothing to do
+   * with one another — and nothing in a rendered outdoor scene gives it away
+   * faster than that. `sunDir` here is the map's own key light, normalised
+   * (see {@link applyArena}), so the disc, its halo, the lit edge of every
+   * cloud and the shadow under every figure all come from the same place.
+   *
+   * The cloud is the sky direction divided by its own altitude — the standard
+   * flat-plane projection — so the sheets converge toward the horizon the way
+   * a real overcast does, instead of being pasted evenly over the dome. It is
+   * faded out in the last few degrees above the skyline, where that projection
+   * blows up and the noise turns to static.
+   */
   private buildSky(): void {
     const geometry = this.track(new THREE.SphereGeometry(108, 32, 20));
+    const uniforms: SkyUniforms = {
+      zenith: { value: new THREE.Color(0x0a0d1a) },
+      horizon: { value: new THREE.Color(0x2a1c16) },
+      ember: { value: new THREE.Color(0xa8481a) },
+      haze: { value: new THREE.Color(0x2a1c16) },
+      sunColor: { value: new THREE.Color(0xffd7a1) },
+      cloudColor: { value: new THREE.Color(0x2a2320) },
+      sunDir: { value: new THREE.Vector3(-0.47, 0.79, 0.37) },
+      sunSize: { value: 0.012 },
+      sunGlow: { value: 1 },
+      cloudAmount: { value: 0.6 },
+      cloudSpeed: { value: 0.008 },
+      uTime: { value: 0 },
+    };
     const material = this.track(
       new THREE.ShaderMaterial({
         side: THREE.BackSide,
         depthWrite: false,
         fog: false,
-        uniforms: {
-          zenith: { value: new THREE.Color(0x0a0d1a) },
-          horizon: { value: new THREE.Color(0x2a1c16) },
-          ember: { value: new THREE.Color(0xa8481a) },
-        },
+        uniforms: uniforms as unknown as Record<string, THREE.IUniform>,
         vertexShader: /* glsl */ `
           varying vec3 vPosition;
           void main() {
@@ -154,9 +215,17 @@ export class Battlefield {
           uniform vec3 zenith;
           uniform vec3 horizon;
           uniform vec3 ember;
+          uniform vec3 haze;
+          uniform vec3 sunColor;
+          uniform vec3 cloudColor;
+          uniform vec3 sunDir;
+          uniform float sunSize;
+          uniform float sunGlow;
+          uniform float cloudAmount;
+          uniform float cloudSpeed;
+          uniform float uTime;
           varying vec3 vPosition;
 
-          // Cheap value noise for the smoke banding across the sky.
           float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
           float noise(vec2 p) {
             vec2 i = floor(p); vec2 f = fract(p);
@@ -164,30 +233,55 @@ export class Battlefield {
             return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
                        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
           }
+          // Three octaves, not four: the fourth is invisible under a bloom pass
+          // and this shader covers whatever the mountains do not.
+          float fbm(vec2 p) {
+            float total = 0.0;
+            float amplitude = 0.52;
+            for (int i = 0; i < 3; i += 1) {
+              total += noise(p) * amplitude;
+              p *= 2.07;
+              amplitude *= 0.5;
+            }
+            return total;
+          }
 
           void main() {
             vec3 dir = normalize(vPosition);
             float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+            float up = max(dir.y, 0.0);
+            float toSun = max(dot(dir, sunDir), 0.0);
+
             vec3 color = mix(horizon, zenith, pow(h, 0.55));
+            // The band of air the plain and the ranges dissolve into.
+            color = mix(color, haze, pow(1.0 - up, 9.0) * 0.8);
 
-            // Fires below the horizon line push warm light up into the haze.
+            // Whatever is burning below the skyline pushes light up into it,
+            // strongest under the sun's own bearing.
             float glow = pow(max(0.0, 1.0 - abs(h - 0.5) * 6.0), 2.4);
-            float side = smoothstep(-0.6, 0.9, dir.x * 0.6 + dir.z * 0.8);
-            color += ember * glow * (0.35 + side * 0.75);
+            color += ember * glow * (0.3 + pow(toSun, 3.0) * 1.05);
 
-            // Torn smoke banks.
-            float bands = noise(vec2(atan(dir.z, dir.x) * 3.0, h * 7.0));
-            color = mix(color, color * 0.55 + vec3(0.06, 0.05, 0.05), bands * 0.45 * (1.0 - h));
+            vec2 plane = dir.xz / max(0.14, up) * 0.5 + uTime * cloudSpeed;
+            float sheet = fbm(plane);
+            float cover = smoothstep(0.62 - cloudAmount * 0.5, 0.99 - cloudAmount * 0.42, sheet);
+            cover *= smoothstep(0.0, 0.14, up);
+            vec3 lit = mix(cloudColor * 0.6, cloudColor, smoothstep(0.12, 0.86, sheet));
+            lit += sunColor * pow(toSun, 6.0) * sunGlow * 0.45;
+            color = mix(color, lit, cover * 0.92);
+
+            // Halo over the cloud, then the disc over everything.
+            color += sunColor * pow(toSun, 7.0) * sunGlow * 0.16;
+            if (sunSize > 0.0) {
+              float disc = smoothstep(1.0 - sunSize, 1.0 - sunSize * 0.45, toSun);
+              color = mix(color, sunColor * 1.4, disc);
+            }
+
             gl_FragColor = vec4(color, 1.0);
           }
         `,
       }),
     );
-    this.skyUniforms = material.uniforms as unknown as {
-      zenith: { value: THREE.Color };
-      horizon: { value: THREE.Color };
-      ember: { value: THREE.Color };
-    };
+    this.skyUniforms = uniforms;
     const dome = new THREE.Mesh(geometry, material);
     dome.renderOrder = -10;
     dome.frustumCulled = false;
@@ -195,13 +289,40 @@ export class Battlefield {
   }
 
   /**
-   * Two jagged mountain silhouettes. Fog is disabled and the haze is baked into
-   * vertex colours instead, so the ridges stay readable behind the fogged plain.
+   * Three ranges of mountains stacked into the distance.
+   *
+   * Two things make a skyline read as *far away* rather than as a black cutout,
+   * and the old pair of silhouettes had neither. The first is simply having
+   * more than one edge: a third range behind the other two, taller and more
+   * broken, is what turns a wall into a country. The second is that distance
+   * has a colour — the farther a range stands, the more of the air in front of
+   * it you are looking through, so it washes toward the map's `haze` until the
+   * farthest one is barely darker than the sky it stands against.
+   *
+   * On top of that the peaks take snow above the map's `snowline`, which is
+   * what actually says *mountain* rather than *hill*; and the ridged profile
+   * has an `abs` term in it now, because summing plain sines gives rolling
+   * dunes and real ranges come to points.
+   *
+   * Fog is off and all of this is baked into vertex colours instead, so the
+   * ranges stay readable behind a fogged plain. They are rebaked whenever the
+   * map changes — six hundred vertices a range, once, against getting the
+   * snowline and the haze per theme.
    */
   private buildRidges(): void {
-    const layers: { radius: number; height: number; jag: number; top: number; base: number }[] = [
-      { radius: 96, height: 30, jag: 7, top: 0x1b2130, base: 0x2b2a2c },
-      { radius: 74, height: 22, jag: 5.4, top: 0x11141d, base: 0x20201f },
+    const layers: {
+      radius: number;
+      height: number;
+      jag: number;
+      rock: number;
+      scree: number;
+      distance: number;
+      /** Turns this range's own profile, so the three do not share a skyline. */
+      phase: number;
+    }[] = [
+      { radius: 104, height: 42, jag: 10.5, rock: 0x2a3142, scree: 0x333340, distance: 1, phase: 0 },
+      { radius: 96, height: 30, jag: 7, rock: 0x1b2130, scree: 0x2b2a2c, distance: 0.62, phase: 1.7 },
+      { radius: 74, height: 22, jag: 5.4, rock: 0x11141d, scree: 0x20201f, distance: 0.28, phase: 3.9 },
     ];
 
     for (const layer of layers) {
@@ -210,38 +331,59 @@ export class Battlefield {
         new THREE.CylinderGeometry(layer.radius, layer.radius, layer.height, segments, 1, true),
       );
       const position = geometry.getAttribute("position") as THREE.BufferAttribute;
-      const colors = new Float32Array(position.count * 3);
-      const topColor = new THREE.Color(layer.top);
-      const baseColor = new THREE.Color(layer.base);
       const half = layer.height / 2;
 
-      // Displace the upper rim into peaks; ring wraps so first/last must match.
+      // Displace the upper rim into peaks.
+      //
+      // Every harmonic here is a *whole* multiple of the turn, which the old
+      // profile's 3.1, 7.7 and 13.3 were not: the ring is sampled 0 … 2π and
+      // then closed, so a fractional harmonic leaves the last vertex at a
+      // different height from the first and the range has one seam in it.
+      //
+      // The `abs` terms are the ridged part. A sum of sines gives rolling
+      // dunes, because it is smooth everywhere; a summit is a crease, and
+      // folding the sine is what puts creases in.
       const peaks: number[] = [];
+      let tallest = 1e-3;
       for (let i = 0; i <= segments; i += 1) {
-        const t = (i / segments) * Math.PI * 2;
-        peaks.push(
-          (Math.sin(t * 3.1) * 0.5 + Math.sin(t * 7.7 + 1.2) * 0.32 + Math.sin(t * 13.3 + 2.6) * 0.18) * layer.jag,
-        );
+        const t = (i / segments) * Math.PI * 2 + layer.phase;
+        const shape =
+          (1 - Math.abs(Math.sin(t * 2 + 0.4))) * 0.62 +
+          (1 - Math.abs(Math.sin(t * 5 + 1.9))) * 0.3 +
+          Math.sin(t * 3) * 0.24 +
+          Math.sin(t * 8 + 1.2) * 0.16 +
+          Math.sin(t * 13 + 2.6) * 0.09;
+        const peak = shape * layer.jag;
+        peaks.push(peak);
+        tallest = Math.max(tallest, peak);
       }
 
+      const rise = new Float32Array(position.count);
       for (let i = 0; i < position.count; i += 1) {
         const y = position.getY(i);
         const isTop = y > 0;
         const angle = Math.atan2(position.getZ(i), position.getX(i));
         const index = Math.round(((angle + Math.PI) / (Math.PI * 2)) * segments) % segments;
         if (isTop) position.setY(i, half + peaks[index]);
-        const shade = isTop ? topColor : baseColor;
-        colors[i * 3] = shade.r;
-        colors[i * 3 + 1] = shade.g;
-        colors[i * 3 + 2] = shade.b;
+        // Only the summits can hold snow, and only the ones that earned it: a
+        // low shoulder of the same range stays bare.
+        rise[i] = isTop ? Math.max(0, peaks[index]) / tallest : 0;
       }
       position.needsUpdate = true;
-      geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(new Float32Array(position.count * 3), 3));
 
       const material = this.track(
         new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false }),
       );
       this.ridgeMaterials.push(material);
+      this.ridges.push({
+        geometry,
+        rise,
+        distance: layer.distance,
+        rock: new THREE.Color(layer.rock),
+        scree: new THREE.Color(layer.scree),
+      });
+
       const ridge = new THREE.Mesh(geometry, material);
       ridge.position.y = layer.height / 2 - 8;
       ridge.renderOrder = -9;
@@ -249,25 +391,116 @@ export class Battlefield {
     }
   }
 
+  /**
+   * Repaints the ranges for a map: snow down to its snowline, then as much of
+   * the intervening air as the range's distance calls for.
+   */
+  private paintRidges(look: ArenaLook): void {
+    const haze = new THREE.Color(look.haze.color);
+    // Snow is never white — it is the sky lying on a mountain, so it takes the
+    // map's own haze with it.
+    const snow = new THREE.Color(0xffffff).lerp(haze, 0.32);
+    const shade = new THREE.Color();
+
+    for (const layer of this.ridges) {
+      const colors = layer.geometry.getAttribute("color") as THREE.BufferAttribute;
+      const array = colors.array as Float32Array;
+      for (let i = 0; i < layer.rise.length; i += 1) {
+        const rise = layer.rise[i];
+        shade.copy(rise > 0 ? layer.rock : layer.scree);
+        if (look.snowline < 1) {
+          const cap = Math.min(1, Math.max(0, (rise - look.snowline) / 0.2));
+          shade.lerp(snow, cap * cap * (3 - 2 * cap));
+        }
+        // Aerial perspective: distance first, then a little extra into every
+        // valley, which is where the haze actually pools.
+        const air = Math.min(0.92, look.haze.strength * (0.26 + layer.distance * 0.74) + (1 - rise) * 0.16);
+        shade.lerp(haze, air);
+        array[i * 3] = shade.r;
+        array[i * 3 + 1] = shade.g;
+        array[i * 3 + 2] = shade.b;
+      }
+      colors.needsUpdate = true;
+    }
+  }
+
   // ----------------------------------------------------------------- ground
 
+  /**
+   * The war plain: three hundred metres of churned earth, and the two problems
+   * that come with painting it out of one 512² texture.
+   *
+   * The first is that a 64× repeat *reads* as a 64× repeat. There is no amount
+   * of detail in the tile that fixes it, because what the eye picks up is the
+   * period, not the content — so the ground carries a second earth tone and a
+   * slow, baked blend between the two across tens of metres. That variation is
+   * far larger than the tile, so it breaks the beat without touching the tile
+   * at all. The two tones are uniforms, which is what keeps a map change to
+   * setting two colours rather than rewriting twelve thousand vertices.
+   *
+   * The second is that flat ground under a low sun is flat: a diffuse texture
+   * with no relief cannot throw the long grazing shadow that says *rutted*. The
+   * same painted mud drives a normal map, cheaply, at boot.
+   */
   private buildPlain(): void {
     const map = this.track(mudTexture());
     map.repeat.set(64, 64);
+    // 128², not the stone's 256²: the plain is repeated 64× over three hundred
+    // metres, so a quarter of the samples is still finer than a screen pixel
+    // anywhere past the palisade — and the Sobel is boot-time CPU work.
+    const relief = this.track(normalFromCanvas(map.image as HTMLCanvasElement, 1.4, 128));
+    relief.repeat.copy(map.repeat);
+
     const geometry = this.track(new THREE.PlaneGeometry(320, 320, 110, 110));
     const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const blend = new Float32Array(position.count);
     for (let i = 0; i < position.count; i += 1) {
       const x = position.getX(i);
       const y = position.getY(i);
       position.setZ(i, terrainHeight(x, -y));
+      // Wavelengths of 50–300 m, chosen against the 5 m the texture repeats at
+      // so the two never beat against one another.
+      const patch =
+        Math.sin(x * 0.021 + Math.cos(y * 0.017) * 1.6) * 0.5 +
+        Math.sin(y * 0.013 - x * 0.009) * 0.34 +
+        Math.sin((x + y) * 0.047) * 0.16;
+      blend[i] = Math.min(1, Math.max(0, patch * 0.5 + 0.5));
     }
     position.needsUpdate = true;
+    geometry.setAttribute("aBlend", new THREE.BufferAttribute(blend, 1));
     geometry.computeVertexNormals();
 
+    const tones = {
+      a: { value: new THREE.Color(0x6b6055) },
+      b: { value: new THREE.Color(0x6b6055) },
+    };
+    this.plainTones = tones;
+
     const material = this.track(
-      new THREE.MeshStandardMaterial({ map, color: 0x6b6055, roughness: 1, metalness: 0 }),
+      new THREE.MeshStandardMaterial({
+        map,
+        normalMap: relief,
+        normalScale: new THREE.Vector2(0.5, 0.5),
+        // White, because the tint now arrives per-vertex from the two tones
+        // below — setting both would double it.
+        color: 0xffffff,
+        roughness: 1,
+        metalness: 0,
+      }),
     );
-    this.plainMaterial = material;
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.uGroundA = tones.a;
+      shader.uniforms.uGroundB = tones.b;
+      shader.vertexShader = `attribute float aBlend;\nvarying float vBlend;\n${shader.vertexShader}`.replace(
+        "#include <begin_vertex>",
+        "#include <begin_vertex>\n\tvBlend = aBlend;",
+      );
+      shader.fragmentShader =
+        `uniform vec3 uGroundA;\nuniform vec3 uGroundB;\nvarying float vBlend;\n${shader.fragmentShader}`.replace(
+          "#include <color_fragment>",
+          "#include <color_fragment>\n\tdiffuseColor.rgb *= mix(uGroundA, uGroundB, vBlend);",
+        );
+    };
     const plain = new THREE.Mesh(geometry, material);
     plain.rotation.x = -Math.PI / 2;
     plain.position.y = -0.7;
@@ -843,13 +1076,26 @@ export class Battlefield {
    * their ash and smoke are against the new sky.
    */
   applyArena(look: ArenaLook): void {
-    if (this.skyUniforms) {
-      this.skyUniforms.zenith.value.setHex(look.sky.zenith);
-      this.skyUniforms.horizon.value.setHex(look.sky.horizon);
-      this.skyUniforms.ember.value.setHex(look.sky.ember);
+    const sky = this.skyUniforms;
+    if (sky) {
+      sky.zenith.value.setHex(look.sky.zenith);
+      sky.horizon.value.setHex(look.sky.horizon);
+      sky.ember.value.setHex(look.sky.ember);
+      sky.haze.value.setHex(look.haze.color);
+      sky.sunColor.value.setHex(look.sun.color);
+      sky.cloudColor.value.setHex(look.cloud.color);
+      sky.sunSize.value = look.sun.size;
+      sky.sunGlow.value = look.sun.glow;
+      sky.cloudAmount.value = look.cloud.amount;
+      sky.cloudSpeed.value = look.cloud.speed;
+      // The sun *is* the key light. Nothing about where it stands is stored on
+      // the theme, so the two can never be edited apart.
+      sky.sunDir.value.set(...look.keyLight.position).normalize();
     }
     for (const material of this.ridgeMaterials) material.color.setRGB(...look.ridge);
-    this.plainMaterial?.color.setHex(look.ground);
+    this.paintRidges(look);
+    this.plainTones?.a.value.setHex(look.ground);
+    this.plainTones?.b.value.setHex(look.groundAlt);
 
     this.fireScale = look.fire;
     for (const flame of this.pyreFlameMaterials) flame.opacity = 0.92 * Math.max(0.4, look.fire);
@@ -925,6 +1171,7 @@ export class Battlefield {
     this.elapsed += delta;
 
     for (const uniform of this.windUniforms) uniform.value = this.elapsed;
+    if (this.skyUniforms) this.skyUniforms.uTime.value = this.elapsed;
 
     for (const fire of this.campfires) {
       if (!fire.light.visible) continue;
@@ -1008,6 +1255,7 @@ export class Battlefield {
     for (const points of [this.ash, this.smoke, this.torchSpecks]) points?.geometry.dispose();
     for (const item of this.disposables) item.dispose();
     this.disposables = [];
+    this.ridges = [];
     this.troops = [];
     this.props = [];
     this.siegeProps = [];

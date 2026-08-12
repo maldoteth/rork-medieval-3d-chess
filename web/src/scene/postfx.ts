@@ -13,8 +13,23 @@ import { ARENA_LOOKS, DEFAULT_ARENA } from "./arena";
 import { QUALITY_SETTINGS, type QualityPreset } from "./quality";
 
 /**
- * Warm/cool medieval grade: lifted blacks, split-toned highlights and shadows,
- * gentle grain and a vignette. Runs after tone mapping, before SMAA.
+ * The film grade: a per-map split tone, bleached highlights, lifted blacks,
+ * grain that lives in the shadows, and a vignette. Runs after tone mapping,
+ * before SMAA.
+ *
+ * The split tone used to be two constants — one warm, one cool — which meant
+ * every map got the same dusk-siege look laid over the top of whatever it had
+ * carefully been lit as. `uShadow` and `uHighlight` now come from the theme.
+ *
+ * They arrive **luminance-normalised** (see {@link PostFX.pushGrade}), which is
+ * the whole trick: a tint is a direction, not a brightness. Divided through by
+ * its own luma, a colour multiplies as a pure hue shift, so pushing the shadows
+ * hard into blue cannot also crush the picture — which is what makes it safe to
+ * run this at full strength on the dark maps.
+ *
+ * `uSaturation` shapes the highlights alone. Real film loses colour as it
+ * approaches its shoulder; a renderer does not, which is why a bright sky comes
+ * out of a naive grade looking like poster paint.
  */
 const GradeShader = {
   uniforms: {
@@ -24,6 +39,9 @@ const GradeShader = {
     uGrain: { value: 0.045 },
     uLift: { value: 0.02 },
     uStrength: { value: 1 },
+    uShadow: { value: new THREE.Vector3(0.86, 0.93, 1.1) },
+    uHighlight: { value: new THREE.Vector3(1.06, 0.99, 0.88) },
+    uSaturation: { value: 1 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -39,7 +57,12 @@ const GradeShader = {
     uniform float uGrain;
     uniform float uLift;
     uniform float uStrength;
+    uniform vec3 uShadow;
+    uniform vec3 uHighlight;
+    uniform float uSaturation;
     varying vec2 vUv;
+
+    const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 
     float hash(vec2 p) {
       return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
@@ -48,30 +71,47 @@ const GradeShader = {
     void main() {
       vec4 texel = texture2D(tDiffuse, vUv);
       vec3 color = texel.rgb;
-      float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      float luma = dot(color, LUMA);
 
-      // Split tone: torchlight into highlights, moonlit steel into shadows.
-      vec3 warm = vec3(1.06, 0.99, 0.88);
-      vec3 cool = vec3(0.86, 0.93, 1.10);
-      vec3 graded = color * mix(cool, warm, smoothstep(0.15, 0.75, luma));
+      // Split tone: the map's own sunlight into the highlights, the colour of
+      // its shadows into the darks. Held to a little over half strength — past
+      // that it stops reading as light and starts reading as a filter.
+      vec3 tint = mix(uShadow, uHighlight, smoothstep(0.05, 0.7, luma));
+      vec3 graded = color * mix(vec3(1.0), tint, 0.55);
+
+      // Shoulder bleach: colour drains out of the brightest part of the frame.
+      float bleach = smoothstep(0.55, 1.0, luma) * (1.0 - uSaturation);
+      graded = mix(graded, vec3(dot(graded, LUMA)), bleach);
 
       // Filmic contrast with lifted blacks.
       graded = mix(vec3(uLift), graded, 1.04);
-      graded = clamp((graded - 0.5) * 1.06 + 0.5, 0.0, 1.4);
+      graded = clamp((graded - 0.5) * 1.07 + 0.5, 0.0, 1.4);
 
       // Vignette.
       vec2 centred = vUv - 0.5;
       float vignette = 1.0 - dot(centred, centred) * uVignette;
       graded *= clamp(vignette, 0.0, 1.0);
 
-      // Film grain.
+      // Grain, weighted into the shadows — that is where emulsion actually has
+      // it, and keeping it out of the sky stops a bright map looking dirty.
       float grain = (hash(vUv * 512.0 + fract(uTime) * 97.0) - 0.5) * uGrain;
-      graded += grain;
+      graded += grain * (1.25 - luma * 0.85);
 
       gl_FragColor = vec4(mix(color, graded, uStrength), texel.a);
     }
   `,
 };
+
+/**
+ * A tint colour divided through by its own luminance, so multiplying by it
+ * changes hue without changing exposure. Guards a black tint, which would
+ * otherwise divide by nothing and take the frame with it.
+ */
+function normalisedTint(hex: number, into: THREE.Vector3): THREE.Vector3 {
+  const color = new THREE.Color(hex);
+  const luma = Math.max(0.04, color.r * 0.2126 + color.g * 0.7152 + color.b * 0.0722);
+  return into.set(color.r / luma, color.g / luma, color.b / luma);
+}
 
 /**
  * Cinematic pipeline. Passes are rebuilt whenever the graphics preset changes so
@@ -215,13 +255,18 @@ export class PostFX {
 
   private pushGrade(): void {
     if (!this.gradePass) return;
-    const uniforms = this.gradePass.uniforms as unknown as Record<string, { value: number }>;
+    const uniforms = this.gradePass.uniforms as unknown as Record<string, { value: number | THREE.Vector3 }>;
     const grade = this.grade;
     const soften = this.clarity;
     uniforms.uVignette.value = soften ? grade.vignette * 0.5 : grade.vignette;
     uniforms.uGrain.value = soften ? grade.grain * 0.3 : grade.grain;
     uniforms.uLift.value = grade.lift;
     uniforms.uStrength.value = soften ? grade.strength * 0.82 : grade.strength;
+    normalisedTint(grade.shadow, uniforms.uShadow.value as THREE.Vector3);
+    normalisedTint(grade.highlight, uniforms.uHighlight.value as THREE.Vector3);
+    // Showcase clarity keeps the map's colour: bleaching the highlights is what
+    // the mode exists to *not* do.
+    uniforms.uSaturation.value = soften ? Math.min(1, grade.saturation + 0.1) : grade.saturation;
   }
 
   /** Enables depth of field for the intro, promotion picker and checkmate dolly. */

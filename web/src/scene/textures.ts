@@ -25,6 +25,73 @@ function toTexture(canvas: HTMLCanvasElement, repeat = 1, srgb = true): THREE.Ca
   return texture;
 }
 
+/**
+ * A tangent-space normal map derived from a painted canvas's own luminance.
+ *
+ * Everything in this file is albedo, which is why the hall's stone used to read
+ * as a photograph of a wall pasted onto a smooth cylinder: under four flickering
+ * point lights, a surface with no relief has nothing to flicker *across*. This
+ * takes the light and dark the painter already put down — mortar joints are
+ * dark, bevels are light — and turns it into surface.
+ *
+ * Three things about it are deliberate:
+ *
+ * - **It is downsampled first.** A Sobel is one pass per pixel on the CPU at
+ *   boot, and normals tolerate a quarter of the albedo's resolution far better
+ *   than colour does; 512² would cost four times as much for a difference
+ *   nobody can see through a torch.
+ * - **The sampler wraps.** The albedo tiles, so the derivative at the seam has
+ *   to be taken against the opposite edge or every repeat gets a visible crease.
+ * - **It is not sRGB.** A normal map is data, not colour; tagging it sRGB would
+ *   push every normal toward the poles.
+ *
+ * Sign convention: `nx = -dH/du`, `ny = -dH/dv`. The Sobel's X term already
+ * comes out as `-dH/du` (u runs with the canvas's x), but its Y term comes out
+ * as `+dH/dv`, because `flipY` puts canvas row 0 at `v = 1` — hence the negated
+ * `dy`. Invert that one sign if the joints ever read as ridges rather than
+ * grooves.
+ */
+export function normalFromCanvas(source: HTMLCanvasElement, strength = 2.4, size = 256): THREE.CanvasTexture {
+  const { canvas: small, ctx: smallCtx } = createCanvas(size);
+  smallCtx.drawImage(source, 0, 0, size, size);
+  const pixels = smallCtx.getImageData(0, 0, size, size).data;
+
+  const heights = new Float32Array(size * size);
+  for (let i = 0; i < heights.length; i += 1) {
+    const p = i * 4;
+    heights[i] = (pixels[p] * 0.299 + pixels[p + 1] * 0.587 + pixels[p + 2] * 0.114) / 255;
+  }
+  const at = (x: number, y: number): number => heights[((y + size) % size) * size + ((x + size) % size)];
+
+  const { canvas, ctx } = createCanvas(size);
+  const image = ctx.createImageData(size, size);
+  const data = image.data;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      const dx =
+        at(x - 1, y - 1) +
+        2 * at(x - 1, y) +
+        at(x - 1, y + 1) -
+        (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1));
+      const dy =
+        at(x - 1, y - 1) +
+        2 * at(x, y - 1) +
+        at(x + 1, y - 1) -
+        (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1));
+      const nx = dx * strength;
+      const ny = -dy * strength;
+      const length = Math.hypot(nx, ny, 1);
+      const p = (y * size + x) * 4;
+      data[p] = ((nx / length) * 0.5 + 0.5) * 255;
+      data[p + 1] = ((ny / length) * 0.5 + 0.5) * 255;
+      data[p + 2] = (1 / length) * 0.5 * 255 + 127.5;
+      data[p + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  return toTexture(canvas, 1, false);
+}
+
 function grain(ctx: CanvasRenderingContext2D, size: number, amount: number, alpha: number): void {
   const image = ctx.getImageData(0, 0, size, size);
   const data = image.data;
@@ -84,27 +151,113 @@ export function marbleTexture(dark: boolean): THREE.CanvasTexture {
   return toTexture(canvas);
 }
 
-/** Rough castle flagstone floor with mortar joints. */
+/**
+ * Cut ashlar: uneven courses of dressed stone in deep mortar joints, with
+ * chipped arrises, per-block tone and damp running out of the beds.
+ *
+ * The old version was a four-by-four grid of identical squares, which is the
+ * one pattern the eye picks out instantly at a 8× repeat — a chessboard laid
+ * over the hall. Three things fix that and they are all cheap:
+ *
+ * - **The courses are unequal**, and their heights sum to exactly one tile, so
+ *   the wrap is seamless without the rows being interchangeable.
+ * - **The blocks within a course are unequal too**, and each course is dragged
+ *   sideways by its own offset, so no two rows break in the same place.
+ * - **Every block is lit from the top-left** — a pale arris along its top and
+ *   left edge, a shadow along the bottom and right. That is what the normal map
+ *   derived from this canvas then reads as depth, so the painted light and the
+ *   real light agree instead of fighting.
+ */
 export function flagstoneTexture(): THREE.CanvasTexture {
   const size = 512;
   const { canvas, ctx } = createCanvas(size);
-  ctx.fillStyle = "#1b1a19";
+
+  // Mortar first: it is what shows in every recess, so everything else is laid
+  // on top of it rather than drawn around it.
+  ctx.fillStyle = "#161513";
   ctx.fillRect(0, 0, size, size);
 
-  const cell = size / 4;
-  for (let row = 0; row < 4; row += 1) {
-    for (let col = 0; col < 4; col += 1) {
-      const offset = row % 2 === 0 ? 0 : cell / 2;
-      const x = (col * cell + offset) % size;
-      const y = row * cell;
-      const shade = 38 + Math.random() * 26;
-      ctx.fillStyle = `rgb(${shade},${shade - 2},${shade - 5})`;
-      ctx.fillRect(x + 3, y + 3, cell - 6, cell - 6);
-      ctx.fillStyle = "rgba(255,255,255,0.03)";
-      ctx.fillRect(x + 3, y + 3, cell - 6, 3);
+  const joint = 4;
+  /** Course heights as fractions of the tile. They must sum to 1. */
+  const courses = [0.132, 0.104, 0.152, 0.116, 0.14, 0.104, 0.132, 0.12];
+  /** How far each course is dragged sideways, so the breaks never line up. */
+  const shifts = [0, 0.37, 0.11, 0.62, 0.28, 0.81, 0.46, 0.19];
+
+  /** One dressed block, drawn wrapped so a course can break across the seam. */
+  const block = (x: number, y: number, width: number, height: number, tone: number): void => {
+    for (const wrap of [x - size, x, x + size]) {
+      if (wrap + width < 0 || wrap > size) continue;
+      const w = width - joint;
+      const h = height - joint;
+
+      // Rounded, not raw: a fractional `rgb()` is only legal under CSS Color 4,
+      // and a parser that rejects it leaves `fillStyle` on the previous colour
+      // rather than erroring — every block would come out the same shade.
+      const t = Math.round(tone);
+      ctx.fillStyle = `rgb(${t},${Math.round(t * 0.975)},${Math.round(t * 0.93)})`;
+      ctx.fillRect(wrap, y, w, h);
+
+      // Arris: lit along the top and left, in shadow along the bottom and right.
+      ctx.fillStyle = "rgba(255,246,228,0.11)";
+      ctx.fillRect(wrap, y, w, 2);
+      ctx.fillRect(wrap, y, 2, h);
+      ctx.fillStyle = "rgba(0,0,0,0.34)";
+      ctx.fillRect(wrap, y + h - 2, w, 2);
+      ctx.fillRect(wrap + w - 2, y, 2, h);
+
+      // Chipped corners and pitting — a dressed face, not a poured one.
+      const chips = 2 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < chips; i += 1) {
+        const cx = wrap + Math.random() * w;
+        const cy = y + Math.random() * h;
+        const r = 1.5 + Math.random() * 4;
+        ctx.fillStyle = `rgba(0,0,0,${(0.12 + Math.random() * 0.16).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, r, r * (0.5 + Math.random() * 0.7), Math.random() * Math.PI, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
+  };
+
+  let y = 0;
+  courses.forEach((share, row) => {
+    const height = Math.round(share * size);
+    // Four to six blocks across, of unequal width, summing to exactly the tile.
+    const count = 4 + (row % 3);
+    const widths: number[] = [];
+    let total = 0;
+    for (let i = 0; i < count; i += 1) {
+      const w = 1 + (Math.random() - 0.5) * 0.44;
+      widths.push(w);
+      total += w;
+    }
+    const start = -Math.round(shifts[row] * size);
+    let x = start;
+    widths.forEach((w, i) => {
+      // The last block takes whatever rounding left over, so the course spans
+      // exactly one tile and its wrapped copy lands on the seam rather than a
+      // pixel to either side of it.
+      const width = i === widths.length - 1 ? start + size - x : Math.round((w / total) * size);
+      block(x, y, width, height, 52 + Math.random() * 26);
+      x += width;
+    });
+    y += height;
+  });
+
+  // Damp and soot pulled down out of the beds by a few hundred winters.
+  for (let i = 0; i < 26; i += 1) {
+    const x = Math.random() * size;
+    const top = Math.random() * size;
+    const run = 30 + Math.random() * 130;
+    const stain = ctx.createLinearGradient(0, top, 0, top + run);
+    const dark = Math.random() > 0.45;
+    stain.addColorStop(0, dark ? "rgba(10,10,9,0.32)" : "rgba(96,102,84,0.16)");
+    stain.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = stain;
+    ctx.fillRect(x, top, 8 + Math.random() * 34, run);
   }
-  grain(ctx, size, 26, 1);
+
+  grain(ctx, size, 22, 1);
   return toTexture(canvas);
 }
 

@@ -515,18 +515,60 @@ as a painted card of the place rather than a colour swatch.
 
 | Id | Name | Look | Standing on it | Music |
 | --- | --- | --- | --- | --- |
-| `jungle` | **Sun Temple** (default) | Rainforest clearing, jade canopy, drifting pollen | Wall of canopy trees, palms, ferns, hanging vines, two gold-crowned step pyramids | Bone flute and clay ocarina over log drums |
-| `dawn` | **Dawn Court** | Golden morning light, pale sky, warm stone — highest legibility | A far conifer line, glacial boulders, standing stones | Vielle, harp and a soft recorder in dorian |
-| `sands` | **Dune Bastion** | Blinding desert noon, bleached ochre stone, hard shadows | Date palms in clumps, dune backs, two capped obelisks, sand streaming off the crests | Oud ostinato, ney flute, frame drum and riq |
-| `frost` | **Frostfall** | Overcast snowfield, cold flat light, hardest contrast on the sculpts | Snow-laden firs, drifts banked against everything, meltwater, steady snowfall | Nyckelharpa drone, bowed lows, glass bells |
-| `storm` | **Stormwatch** | Rain-lashed rampart, slate light, torches barely holding | Wind-stripped dead trees, wet boulders, standing water, driving rain | Tremolo cello, pizzicato rain, far-off thunder |
-| `dusk` | **Siege at Dusk** | The original torch-lit siege — moodiest, heaviest bloom | Burnt stumps at the edge of the firelight, siege engines, camp pyres | The original siege score |
+| `jungle` | **Sun Temple** | Old forest over a drowned temple, bronze canopy, gold light through deep shade | Wall of canopy trees, palms, ferns, hanging vines, two gold-crowned step pyramids | Bone flute and clay ocarina over log drums |
+| `dawn` | **Dawn Court** (default) | Gold morning over the plains, pale sun, blue ranges in the haze — highest legibility | A far conifer line, glacial boulders, standing stones | Vielle, harp and a soft recorder in dorian |
+| `sands` | **Dune Bastion** | Blinding southern noon, bone stone, hard violet shadows | Date palms in clumps, dune backs, two capped obelisks, sand streaming off the crests | Oud ostinato, ney flute, frame drum and riq |
+| `frost` | **Frostfall** | A snowbound pass, shut sky, white ranges, torches the only warmth | Snow-laden firs, drifts banked against everything, meltwater, steady snowfall | Nyckelharpa drone, bowed lows, glass bells |
+| `storm` | **Stormwatch** | Rain on the deeping wall, near-monochrome slate, torches barely holding | Wind-stripped dead trees, wet boulders, standing water, driving rain | Tremolo cello, pizzicato rain, far-off thunder |
+| `dusk` | **Siege at Dusk** | The ash country — soot overhead, a burning horizon, heaviest bloom | Burnt stumps at the edge of the firelight, siege engines, camp pyres | The original siege score |
+
+The **default is `dawn`**, and that matters more than a default usually does: the arena is not remembered
+between visits — every session boots on it — and the arcade's online seat never shows the muster picker
+at all, so for most players this is not a default so much as the only ground they will ever stand on.
 
 There was a seventh, **Ashfall** — a volcanic caldera lit from below, with basalt columns and molten
 fissures cracking the plain. It is **gone**, and with it the whole fissure system and the basalt
 column rock kind, which no other ground used. A map earns its place by being somewhere you would
 choose to play; a hall so dark that both armies read as silhouettes against their own ground is a
 nice picture and a bad board.
+
+### The sun in the sky is the light on the board
+
+The single thing that gave the old skies away was that **the brightest part of the sky and the
+direction the shadows fell in had nothing to do with one another.** The dome was a vertical gradient
+with a warm smear hard-coded to one side of the world, and the key light was wherever each map had
+put it. Everything else can be right and a scene still reads as rendered when those two disagree.
+
+So the sky no longer stores a sun position at all. It reads `keyLight.position` and normalises it,
+which means the disc, the halo around it, the lit edge of every cloud and the shadow under every
+figure are the same fact and cannot be edited apart. A map with no disc (`sun.size = 0`) is a real
+state, not a missing value: Frostfall and Stormwatch are overcast, and an overcast sky has a bright
+*quarter* rather than a sun.
+
+The cloud is one three-octave sheet, projected the standard way — sky direction divided by its own
+altitude — so the banks converge toward the horizon the way a real overcast does instead of being
+pasted evenly over a dome. That projection blows up at the skyline, so the sheet is faded out in the
+last few degrees above it, which is also where the map's haze band takes over.
+
+### Distance is a colour
+
+There are now **three** ranges of mountains rather than two, and the third one is not there for
+detail — it is there because one edge is a wall and two edges are a backdrop, and it takes a third
+before a skyline reads as a country.
+
+What actually sells the distance is that each range is washed toward the map's own `haze` in
+proportion to how far back it stands, until the farthest is barely darker than the sky behind it.
+That is aerial perspective, and it is the reason the old multipliers could run as high as 1.8: with
+one flat near-black baked per range, the multiplier was the only thing standing between a daylight
+map and two black cutouts. The bake now carries the haze and the snowline itself, so those trims are
+back to a few per cent.
+
+Two smaller things went in with it. The peaks take **snow** above a per-map fraction of their own
+height, which is what says *mountain* rather than *hill* — and the snow is white lerped toward the
+map's haze, because snow is the sky lying on a mountain. And the profile grew a folded-sine term:
+a sum of plain sines is smooth everywhere, so it gives rolling dunes, and a summit is a crease. The
+harmonics are whole multiples of the turn now, too — the old 3.1, 7.7 and 13.3 left the last vertex
+of the ring at a different height from the first, so every range carried one seam.
 
 ### A map is a place, not a filter
 
@@ -628,6 +670,60 @@ painted banner — knights in plate under a pale dawn, obsidian and quetzal plum
 pyramid, a line of muskets behind gunsmoke — laid over the same livery gradient, with the same
 knock-back, hover lift and full-brightness-when-chosen behaviour as the maps. The swatch grew from
 1.5rem to 2.5rem tall, because a painting in a 24px letterbox is a smear.
+
+The gradient under each card is read straight off that map's `sky` and `ground`, so it has to be
+moved whenever a palette is. The **painted cards are one palette behind** the current grade: they
+were commissioned against the old lime rainforest and lemon dunes, and they want regenerating.
+
+### The hall was built out of tubes
+
+Twelve columns, twelve capitals, twelve bases and twelve arches is **forty-eight objects to transform,
+cull and submit every frame**, and not one of them moves. They are now merged into a single mesh at
+boot — as are the nine stretches of curtain wall, and the four brazier stands — and the budget that
+buys back is what pays for the columns having a profile at all: a plinth, a base moulding, a shaft
+with entasis, a necking ring, a two-part capital, and a keystone at each arch crown. Nothing moved.
+The ring is still twelve columns at radius 12.5, at the same heights, because the camera framing
+(and every shot in [Fitting the hall to the screen](#fitting-the-hall-to-the-screen)) is solved
+against exactly that.
+
+The entasis is the part that does the work. A perfectly straight taper always looks turned on a
+lathe, because at real scale a straight column reads as *concave* — nine metres of shaft carrying
+under a tenth of a metre of swell is the difference between a column and a pipe.
+
+Two texturing problems went with it. The first is that every three.js primitive hands back UVs
+running 0–1 across itself, so one shared stone map stretched to fit whatever it was put on: a whole
+tile wrapped around a ten-metre column, and the same tile squeezed onto a half-metre abacus. Every
+part is now UV-scaled by its own size, in whole turns for anything that wraps. The second is that
+the stone had **no relief at all** — under four flickering point lights, a surface with nothing to
+flicker across is a photograph of a wall pasted onto a cylinder. The painted ashlar drives a normal
+map derived from its own luminance at boot, which costs nothing to download; mortar joints are dark
+and arrises are light, so the painted light and the real light agree instead of fighting.
+
+The ashlar itself was a four-by-four grid of identical squares, which is the one pattern the eye
+picks out instantly at an 8× repeat — a chessboard laid over the hall. It is now unequal courses of
+unequal blocks, each course dragged sideways by its own offset, with chipped faces and damp running
+out of the beds. The course heights still sum to exactly one tile, so it wraps.
+
+The same normal-map trick goes on the war plain, where the other tiling problem lives: a 64× repeat
+*reads* as a 64× repeat, and no amount of detail in the tile fixes it, because what the eye picks up
+is the period rather than the content. So the ground carries a second earth tone and a slow blend
+between the two baked across tens of metres — variation far larger than the tile, breaking the beat
+without touching it. The two tones are shader uniforms, so a map change is two colours rather than
+twelve thousand rewritten vertices.
+
+### The grade is the map's own light
+
+The film grade's split tone used to be two constants, one warm and one cool: every map got the same
+dusk-siege look laid over whatever it had carefully been lit as. Each map now names the colour its
+shadows fall in and the colour its sunlight is, and they arrive at the shader **luminance-normalised**
+— divided through by their own luma, so a tint multiplies as a pure hue shift and pushing the shadows
+hard into blue cannot also crush the picture. That is what makes it safe to run at full strength on
+the dark maps.
+
+Two smaller pieces of film behaviour came with it. Colour drains out of the highlights (`saturation`,
+per map) the way it does at a real shoulder — a renderer holds full saturation right up to clipping,
+which is why a naive grade turns a bright sky into poster paint. And the grain is weighted into the
+shadows, where emulsion actually has it; spread evenly, it made the daylight maps look dirty.
 
 ## Project structure
 
