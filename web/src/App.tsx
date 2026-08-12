@@ -5,7 +5,6 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import Index from "./pages/Index";
-import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
@@ -15,9 +14,21 @@ const App = () => (
       <Toaster />
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
+          {/*
+            DEHUB PATCH (2 of 3) — see public/chess-game/README.md in the
+            dehubweb repo.
+
+            Upstream mounts the game at `path="/"` and everything else at
+            NotFound. dehub.io serves this build from the subpath
+            `/chess-game/index.html`, which matched the catch-all instead: the
+            iframe rendered "Oops! Page not found" and no game at all.
+
+            The game is a single screen with no routes of its own, so the
+            honest fix is to let any path render it. `basename` would work too,
+            but only for one hard-coded mount point, and it would break the
+            standalone dev server at `/`.
+          */}
+          <Route path="*" element={<Index />} />
         </Routes>
       </BrowserRouter>
     </TooltipProvider>

@@ -1,3 +1,22 @@
+// DEHUB PATCH (1 of 3) — see public/chess-game/README.md in the dehubweb repo.
+//
+// Upstream loads the search worker by URL:
+//
+//   new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" })
+//
+// dehub.io embeds this build in an iframe sandboxed WITHOUT `allow-same-origin`,
+// so the frame runs in an opaque origin. A URL-addressed worker is then refused
+// outright — "Script at '…/engine.worker.js' cannot be accessed from origin
+// 'null'" — and a module worker fails even from a blob, because module scripts
+// are always fetched in CORS mode. Both were measured in Chromium, not guessed.
+//
+// A CLASSIC worker over an inlined script is the one form that survives an
+// opaque origin, and `?worker&inline` is exactly that: Vite embeds the compiled
+// worker in the bundle and hands back a wrapper that constructs it from a
+// blob/data URL with no `type`. Nothing about the search itself changes, and it
+// still runs off the main thread.
+import EngineWorker from "./engine.worker.ts?worker&inline";
+
 import type { Difficulty, PieceKind, SquareId } from "../core/types";
 
 interface EngineReply {
@@ -28,7 +47,7 @@ export class AiClient {
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
-    const worker = new Worker(new URL("./engine.worker.ts", import.meta.url), { type: "module" });
+    const worker = new EngineWorker();
     worker.onmessage = (event: MessageEvent<EngineReply | null>) => {
       const pending = this.pending;
       if (!pending) return;

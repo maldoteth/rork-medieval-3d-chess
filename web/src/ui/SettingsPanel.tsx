@@ -1,4 +1,27 @@
-import { X } from "lucide-react";
+import { LogOut, X } from "lucide-react";
+
+// DEHUB PATCH (4 of 4) — see public/chess-game/README.md in the dehubweb repo.
+//
+// A way out of the game, for when the game is embedded in a host page.
+//
+// dehub.io frames this build in an iframe sandboxed WITHOUT `allow-same-origin`,
+// so the frame is an opaque origin: it cannot touch the host's DOM and the host
+// cannot touch this one. `postMessage` is the only channel between them. The
+// host paints its own exit control over the frame, but a player who has just
+// opened settings is looking at THIS panel, so the way out belongs here too
+// rather than in chrome they have to go hunting for.
+//
+// Standalone, `window.parent === window` and there is nothing to return to, so
+// the button is not rendered at all — upstream's own deploy is unaffected.
+const EMBEDDED = typeof window !== "undefined" && window.parent !== window;
+
+function requestHostExit(): void {
+  try {
+    window.parent.postMessage({ source: "chess-game", type: "exit" }, "*");
+  } catch {
+    // A host that has gone away is not an error worth surfacing mid-game.
+  }
+}
 
 import type { ArmySkinId } from "../assets/generated";
 import type { Faction } from "../core/types";
@@ -248,6 +271,21 @@ export function SettingsPanel({
           onChange={(value) => onChange({ ...settings, muted: !value })}
         />
         </div>
+
+        {/* DEHUB PATCH (4 of 4). Outside the scroll area, so it cannot be
+            scrolled past — and last, after every setting, because leaving is
+            not a setting. Only present when embedded (see EMBEDDED above). */}
+        {EMBEDDED ? (
+          <div className="mc-panel-foot shrink-0">
+            <button
+              type="button"
+              className="mc-btn mt-4 flex w-full items-center justify-center gap-2 py-3 text-sm"
+              onClick={requestHostExit}
+            >
+              <LogOut size={15} /> Close the game
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
