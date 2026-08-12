@@ -1,0 +1,33 @@
+# Builds the vendorable bundle for dehub.io's arcade.
+#
+# The dist this produces is what gets copied into dehubweb's
+# public/chess-game/ — built with --base=/chess-game/ because the arcade
+# serves it from that subpath, and without sourcemaps because the maps would
+# double what every player downloads for a stack trace nobody reads there.
+#
+# Bun rather than npm because that is the lockfile this repo carries.
+name: build-dist
+
+on:
+  push:
+    branches: [main, dehub-online]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx tsc -p tsconfig.app.json --noEmit
+      - run: bunx vitest run
+      - run: bunx vite build --base=/chess-game/ --sourcemap false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chess-game-dist
+          path: web/dist
+          if-no-files-found: error
