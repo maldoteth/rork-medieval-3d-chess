@@ -1376,60 +1376,74 @@
   box-shadow: 0 0 6px rgba(0, 0, 0, 0.45);
 }
 
+/*
+ * The dot and the swatch behind each battleground card.
+ *
+ * These are read straight off each map's `sky` and `ground` in scene/arena.ts,
+ * so the picker is a summary of the map rather than a decoration next to it. If
+ * a palette moves there, it has to move here — the painted card art loads late
+ * (and may never load), and this gradient is what the player sees until it does.
+ */
 .mc-arena-dot[data-arena="jungle"] {
-  background: linear-gradient(140deg, #2f7f3c, #e8c463);
+  background: linear-gradient(140deg, #3d6b34, #d8b055);
 }
 
 .mc-arena-dot[data-arena="dawn"] {
-  background: linear-gradient(140deg, #7fa9dc, #f4cda0);
+  background: linear-gradient(140deg, #7f9ec2, #f0d3a6);
 }
 
 .mc-arena-dot[data-arena="frost"] {
-  background: linear-gradient(140deg, #a9bed6, #eef4fa);
+  background: linear-gradient(140deg, #7d92ac, #e8eef6);
 }
 
 .mc-arena-dot[data-arena="dusk"] {
-  background: linear-gradient(140deg, #12172a, #8a4a1e);
+  background: linear-gradient(140deg, #0d1220, #b44a16);
 }
 
 .mc-arena-dot[data-arena="sands"] {
-  background: linear-gradient(140deg, #d8a961, #f2e3b4);
+  background: linear-gradient(140deg, #d0a874, #e4d6b2);
 }
 
 .mc-arena-dot[data-arena="storm"] {
-  background: linear-gradient(140deg, #3b4553, #aebbc9);
+  background: linear-gradient(140deg, #2f3947, #a2acb8);
 }
 
+/* Gold breaking through a bronze-green canopy onto old stone. */
 .mc-arena-swatch[data-arena="jungle"] {
   background:
-    radial-gradient(circle at 50% 78%, rgba(226, 182, 76, 0.85) 0%, rgba(226, 182, 76, 0) 46%),
-    linear-gradient(180deg, #64b6d4 0%, #86b842 40%, #2d5f2d 78%, #4c5a34 100%);
+    radial-gradient(circle at 50% 78%, rgba(216, 176, 85, 0.8) 0%, rgba(216, 176, 85, 0) 46%),
+    linear-gradient(180deg, #7ba0b2 0%, #84983f 40%, #2d4c2c 78%, #4a5436 100%);
 }
 
+/* Morning over dry grass, ranges in the haze. */
 .mc-arena-swatch[data-arena="dawn"] {
-  background: linear-gradient(180deg, #6f9fd8 0%, #f0cba2 55%, #a89c85 100%);
+  background: linear-gradient(180deg, #5f88b4 0%, #e6cba4 55%, #8d8259 100%);
 }
 
+/* A shut sky over snow. */
 .mc-arena-swatch[data-arena="frost"] {
-  background: linear-gradient(180deg, #93aac6 0%, #dde6ef 52%, #d6dce5 100%);
+  background: linear-gradient(180deg, #5f7796 0%, #c2cdd9 52%, #c6d1dc 100%);
 }
 
+/* Soot overhead, the horizon still burning. */
 .mc-arena-swatch[data-arena="dusk"] {
-  background: linear-gradient(180deg, #0b1020 0%, #35211a 62%, #6b4021 100%);
+  background:
+    radial-gradient(circle at 50% 72%, rgba(180, 74, 22, 0.85) 0%, rgba(180, 74, 22, 0) 44%),
+    linear-gradient(180deg, #080b16 0%, #2a1a13 62%, #55301a 100%);
 }
 
-/* Deep noon sky over bleached dune stone. */
+/* Deep noon sky over bone-bleached stone. */
 .mc-arena-swatch[data-arena="sands"] {
   background:
-    radial-gradient(circle at 50% 8%, rgba(255, 248, 214, 0.9) 0%, rgba(255, 248, 214, 0) 34%),
-    linear-gradient(180deg, #3f7fc0 0%, #ecdcaa 52%, #b59a63 100%);
+    radial-gradient(circle at 50% 8%, rgba(255, 246, 222, 0.9) 0%, rgba(255, 246, 222, 0) 34%),
+    linear-gradient(180deg, #3a6ea8 0%, #e4d6b2 52%, #b09a6a 100%);
 }
 
 /* Slate cloud, rain-grey stone, one wet highlight. */
 .mc-arena-swatch[data-arena="storm"] {
   background:
-    linear-gradient(102deg, rgba(226, 238, 250, 0.5) 0%, rgba(226, 238, 250, 0) 18%),
-    linear-gradient(180deg, #3b4553 0%, #8c96a1 58%, #5c6058 100%);
+    linear-gradient(102deg, rgba(214, 226, 242, 0.45) 0%, rgba(214, 226, 242, 0) 18%),
+    linear-gradient(180deg, #2f3947 0%, #7e8894 58%, #565a54 100%);
 }
 
 .mc-title-glow {

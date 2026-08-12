@@ -5,6 +5,20 @@
  * colour grade, so a theme is a complete relight of the scene rather than a
  * brightness slider: sky, fog, stone tints, fire strength, tile contrast and
  * the film grade all move together.
+ *
+ * The palettes are cut for a **Middle-earth** register rather than a fantasy
+ * one, and three rules do most of that work:
+ *
+ * - **Nothing is fully saturated.** One hue leads a map and everything else is
+ *   pulled toward stone-grey. Lime, cyan and orange are what make a rendered
+ *   world read as a game; olive, slate and ochre are what make it read as a
+ *   place with weather in it.
+ * - **Warm key against cool ambient.** Every map's sun is warmer than its sky,
+ *   and every map's shadows fall blue — that split is what the grade's
+ *   `shadow`/`highlight` pair then exaggerates on the way to the screen.
+ * - **Distance is a colour, not a fade.** `haze` is the colour the ranges and
+ *   the far plain wash toward, and `fog.color` is kept on top of it, so the
+ *   ground dissolves into the same air the mountains stand in.
  */
 
 export type ArenaTheme = "dawn" | "frost" | "dusk" | "jungle" | "sands" | "storm";
@@ -115,6 +129,17 @@ export interface ArenaLook {
     cool: number;
     intensity: number;
   };
+  /**
+   * Aerial perspective: the colour distance itself is, and how hard it pulls.
+   *
+   * Kept as its own value rather than reusing `fog.color` because the two are
+   * doing different jobs at different ranges — the fog is the air between the
+   * camera and the camps, this is the air stacked in front of a mountain forty
+   * metres beyond the fog's useful range (the ranges run unfogged so they stay
+   * readable, and take their distance from this instead). They are tuned to sit
+   * within a shade of one another so the plain and the skyline agree.
+   */
+  haze: { color: number; strength: number };
 
   // ---------------------------------------------------------------- hall
   hemi: { sky: number; ground: number; intensity: number };
@@ -131,9 +156,43 @@ export interface ArenaLook {
 
   // --------------------------------------------------------- battlefield
   sky: { zenith: number; horizon: number; ember: number };
-  /** Multiplier over the ridges' baked vertex colours (may exceed 1). */
+  /**
+   * The sun the sky draws.
+   *
+   * Its *direction* is deliberately absent: the sky reads that straight off
+   * `keyLight.position`, so the disc in the shot, the halo around it and the
+   * shadow every figure throws can never drift apart. `size` is the disc's
+   * angular radius (0 hides it — an overcast map has no disc, only a bright
+   * quarter of sky), `glow` scales the halo bled into the cloud around it.
+   */
+  sun: { color: number; size: number; glow: number };
+  /**
+   * The cloud sheet. `amount` is roughly the fraction of sky it closes over,
+   * `speed` how fast it crosses. Clouds are lit from the sun's own direction,
+   * so a low sun underlights them and a noon sun flattens them out.
+   */
+  cloud: { amount: number; color: number; speed: number };
+  /**
+   * Snow above this fraction of a range's own height. 1 keeps every peak bare.
+   */
+  snowline: number;
+  /**
+   * Fine trim over the ranges' baked vertex colours.
+   *
+   * These used to run as high as 1.8, because the bake was one flat near-black
+   * per range and the multiplier was the only thing standing between a daylight
+   * map and two black cutouts. The bake now carries the snow and the haze
+   * itself, so this is back to what it should be — a nudge of a few per cent
+   * toward warm or cold. Push it far past 1 and the far range will clip.
+   */
   ridge: [number, number, number];
   ground: number;
+  /**
+   * The plain's second earth tone. The ground is a slow blend between this and
+   * `ground` across tens of metres, which is what stops a 64× tiled mud texture
+   * from reading as 64 copies of one square.
+   */
+  groundAlt: number;
   /** Scales the camp pyre lights and their glow discs. */
   fire: number;
   smoke: { color: number; opacity: number };
@@ -156,44 +215,74 @@ export interface ArenaLook {
    * own strength/threshold instead of one dusk-tuned setting for all three.
    */
   bloom: { strength: number; threshold: number; radius: number };
-  grade: { vignette: number; grain: number; lift: number; strength: number };
+  /**
+   * The film grade.
+   *
+   * `shadow` and `highlight` are the two ends of the split tone — the colour
+   * the darks are pushed toward and the colour the lights are pushed toward.
+   * Every map runs its shadows cooler than its highlights, because that split
+   * is most of what separates a photographed world from a rendered one.
+   * `saturation` shapes the *highlights* only (1 leaves them alone, lower
+   * bleaches them), which is how a bright sky stays bright without going
+   * poster-coloured.
+   */
+  grade: {
+    vignette: number;
+    grain: number;
+    lift: number;
+    strength: number;
+    shadow: number;
+    highlight: number;
+    saturation: number;
+  };
   /** Screen-space CSS vignette strength (0–1). */
   screenVignette: number;
 }
 
 export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
   /**
-   * Sun Temple in the rainforest: high tropical sun, jade canopy and gilded
-   * limestone. The cool green surround is the complement of the Sun Empire's
-   * crimson and gold, so the red army separates from the world instantly.
+   * A temple clearing swallowed by old forest.
+   *
+   * This map used to be the one that gave the game away: jade and lime under a
+   * cyan sky is a *rendered* rainforest, not a wood anybody has stood in. The
+   * canopy is now bronze-green over bottle-green, the light through it is gold
+   * rather than white, and the sky has lost most of its cyan — a high summer
+   * wood with a ruin in it. The surround is still the complement of the Sun
+   * Empire's crimson, so the red army separates from the world as sharply as it
+   * ever did; it simply does it against olive now instead of against neon.
    */
   jungle: {
     id: "jungle",
     label: "Sun Temple",
-    note: "Rainforest temple clearing — jade canopy and gold, the crimson army pops",
+    note: "Old forest over a drowned temple — bronze canopy, gold light, deep shade",
     exposure: 0.95,
-    background: 0x7fb0c4,
-    fog: { color: 0xa6c39b, density: 0.0105 },
+    background: 0x7ba0b2,
+    fog: { color: 0x9fb098, density: 0.0108 },
     environment: {
-      top: 0x4f93c4,
-      bottom: 0x6d7a4a,
-      glow: 0xe8c479,
-      warm: 0xffeec2,
-      cool: 0x8cc487,
+      top: 0x4d86b0,
+      bottom: 0x64704a,
+      glow: 0xe2bd74,
+      warm: 0xffecc0,
+      cool: 0x87a97e,
       intensity: 0.88,
     },
-    hemi: { sky: 0x9fd3e8, ground: 0x4c5a34, intensity: 0.95 },
-    keyLight: { color: 0xfff2cf, intensity: 2.5, position: [-7, 18, 6] },
-    fill: { color: 0x8fbf7a, intensity: 0.7, position: [9, 6, -8] },
+    haze: { color: 0xa9b8a2, strength: 0.66 },
+    hemi: { sky: 0x9ac6dc, ground: 0x4a5436, intensity: 0.95 },
+    keyLight: { color: 0xfff0cb, intensity: 2.5, position: [-7, 18, 6] },
+    fill: { color: 0x86ac74, intensity: 0.7, position: [9, 6, -8] },
     lamp: { color: 0xffeed0, intensity: 0.3 },
     torch: { intensity: 0.4, flame: 0.6 },
-    stone: { floor: 0x8d8f76, dais: 0x9a9a7e, pillar: 0x8a8b70, wall: 0x5f6553, rubble: 0x6d7059 },
+    stone: { floor: 0x8a8c76, dais: 0x95957c, pillar: 0x86886f, wall: 0x5c6152, rubble: 0x6a6c58 },
     window: { color: 0xfff0c0, opacity: 0.52 },
-    shaft: { color: 0xffe9a8, opacity: 0.26 },
-    dust: { color: 0xffeeb4, opacity: 0.3 },
-    sky: { zenith: 0x2f74ad, horizon: 0xdcd6a0, ember: 0x9fc46a },
-    ridge: [1.35, 2.5, 1.25],
-    ground: 0x5d6a44,
+    shaft: { color: 0xffe4a2, opacity: 0.3 },
+    dust: { color: 0xffe9b0, opacity: 0.32 },
+    sky: { zenith: 0x2c6a9e, horizon: 0xcfcb9e, ember: 0x9ab069 },
+    sun: { color: 0xfff0c8, size: 0.005, glow: 0.7 },
+    cloud: { amount: 0.36, color: 0xefe7cd, speed: 0.004 },
+    snowline: 1,
+    ridge: [1.02, 1.08, 0.98],
+    ground: 0x596546,
+    groundAlt: 0x6b7350,
     fire: 0.5,
     smoke: { color: 0x9aa88e, opacity: 0.22 },
     ash: { color: 0xffe8a6, opacity: 0.3 },
@@ -202,55 +291,75 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     siegeEngines: false,
     flora: {
       enabled: true,
-      canopySun: 0x86b842,
-      canopy: 0x4f8c33,
-      canopyDeep: 0x2d5f2d,
-      trunk: 0x5b4732,
-      vine: 0x4f7d36,
-      frond: 0x63993a,
-      temple: { stone: 0xb3a785, moss: 0x6d8149, gold: 0xe2b64c },
-      beam: { color: 0xffe6a6, opacity: 0.3 },
-      pollen: { color: 0xffe6a0, opacity: 0.42 },
+      canopySun: 0x84983f,
+      canopy: 0x4e7434,
+      canopyDeep: 0x2d4c2c,
+      trunk: 0x53412e,
+      vine: 0x4c6d33,
+      frond: 0x5f8236,
+      temple: { stone: 0xada088, moss: 0x687a4c, gold: 0xd8b055 },
+      beam: { color: 0xffe4a2, opacity: 0.34 },
+      pollen: { color: 0xffe6a8, opacity: 0.4 },
     },
-    /** The rainforest overlay already dresses this one, top to bottom. */
+    /** The forest overlay already dresses this one, top to bottom. */
     scenery: NO_SCENERY,
-    board: { light: 0xdcd0a8, dark: 0x2f4a3b, base: 0x515a41, border: 0xc3a86a, trim: 0xd7a93f },
+    board: { light: 0xd8ceaa, dark: 0x2e4539, base: 0x505842, border: 0xbda667, trim: 0xcaa246 },
     bloom: { strength: 0.26, threshold: 0.92, radius: 0.6 },
-    grade: { vignette: 0.55, grain: 0.02, lift: 0.012, strength: 0.68 },
+    grade: {
+      vignette: 0.55,
+      grain: 0.02,
+      lift: 0.012,
+      strength: 0.68,
+      shadow: 0x2c4a5e,
+      highlight: 0xffeeb8,
+      saturation: 0.88,
+    },
     screenVignette: 0.24,
   },
 
-  /** Golden morning over the courtyard — the clearest read of both armies. */
+  /**
+   * Morning over the horse-country: dry ochre grass, a pale gold sun and
+   * blue-grey ranges stacked into the haze behind the camps.
+   *
+   * This is the map the game opens on, so it carries the clearest read of both
+   * armies as well as the establishing shot: warm key, cool fill, and a sky
+   * with enough cloud in it to have somewhere for the light to come from.
+   */
   dawn: {
     id: "dawn",
     label: "Dawn Court",
-    note: "Golden morning light — every figure legible from any angle",
-    exposure: 0.92,
-    background: 0x8aa8c6,
-    fog: { color: 0xaebfd0, density: 0.0085 },
+    note: "Gold morning over the plains — pale sun, blue ranges, every figure legible",
+    exposure: 0.94,
+    background: 0x93a8bc,
+    fog: { color: 0xb7c2c9, density: 0.0082 },
     environment: {
-      top: 0x6a90bd,
-      bottom: 0xb5a68a,
-      glow: 0xe0bb8a,
-      warm: 0xe6d8bc,
-      cool: 0x91aecd,
-      intensity: 0.82,
+      top: 0x6f8faf,
+      bottom: 0xa89877,
+      glow: 0xd8bb8c,
+      warm: 0xe8d9b6,
+      cool: 0x93a9c2,
+      intensity: 0.84,
     },
-    hemi: { sky: 0xa8c2e0, ground: 0x7d6e55, intensity: 0.85 },
-    keyLight: { color: 0xffeecb, intensity: 2.35, position: [-9, 16, 8] },
-    fill: { color: 0x9ab2d2, intensity: 0.62, position: [8, 7, -9] },
-    lamp: { color: 0xffefd8, intensity: 0.3 },
+    haze: { color: 0xb9c6cf, strength: 0.62 },
+    hemi: { sky: 0xa9c0d6, ground: 0x7a6f57, intensity: 0.85 },
+    keyLight: { color: 0xffe9c0, intensity: 2.35, position: [-9, 16, 8] },
+    fill: { color: 0x93a9c6, intensity: 0.62, position: [8, 7, -9] },
+    lamp: { color: 0xffeeda, intensity: 0.3 },
     torch: { intensity: 0.45, flame: 0.65 },
-    stone: { floor: 0x8d8471, dais: 0x998e78, pillar: 0x8a806d, wall: 0x6b645a, rubble: 0x746d61 },
-    window: { color: 0xffeecd, opacity: 0.5 },
-    shaft: { color: 0xffe0b4, opacity: 0.16 },
-    dust: { color: 0xffeccc, opacity: 0.18 },
-    sky: { zenith: 0x3d6ea8, horizon: 0xcaa87f, ember: 0xd08f52 },
-    ridge: [1.25, 1.32, 1.5],
-    ground: 0x7d7462,
+    stone: { floor: 0x8a8474, dais: 0x968f7c, pillar: 0x878170, wall: 0x6a655c, rubble: 0x736d62 },
+    window: { color: 0xffedcc, opacity: 0.5 },
+    shaft: { color: 0xffe2ba, opacity: 0.18 },
+    dust: { color: 0xffeeda, opacity: 0.2 },
+    sky: { zenith: 0x2f5f96, horizon: 0xd8c9a8, ember: 0xe0ab6a },
+    sun: { color: 0xfff2d2, size: 0.006, glow: 0.55 },
+    cloud: { amount: 0.42, color: 0xf4e9d6, speed: 0.0035 },
+    snowline: 0.62,
+    ridge: [1, 1.01, 1.06],
+    ground: 0x7c7460,
+    groundAlt: 0x8d8259,
     fire: 0.6,
     smoke: { color: 0x8f8a83, opacity: 0.2 },
-    ash: { color: 0xe3bd8b, opacity: 0.24 },
+    ash: { color: 0xe3bd8b, opacity: 0.22 },
     troops: { ivory: 0x6c7994, obsidian: 0x5e4a44, emissive: 0.16 },
     birds: 0x141317,
     siegeEngines: true,
@@ -258,44 +367,63 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     /** A far conifer line and a few glacial boulders — the court has a country. */
     scenery: {
       ...NO_SCENERY,
-      grove: { kind: "pine", density: 0.55, inner: 46, trunk: 0x4a3a2c, foliage: 0x3f5a3e },
-      rocks: { kind: "boulder", density: 0.4, color: 0x8a8172 },
-      monoliths: { kind: "menhir", stone: 0x8e8676, accent: 0xc7ab7e },
+      grove: { kind: "pine", density: 0.55, inner: 46, trunk: 0x483a2d, foliage: 0x3c5540 },
+      rocks: { kind: "boulder", density: 0.4, color: 0x87806f },
+      monoliths: { kind: "menhir", stone: 0x8b8474, accent: 0xc3a97e },
     },
-    board: { light: 0xd9cfb8, dark: 0x3c4351, base: 0x554d40, border: 0xb2a17c, trim: 0x957336 },
+    board: { light: 0xd7cdb6, dark: 0x3a4150, base: 0x544d41, border: 0xb0a07c, trim: 0x93733a },
     bloom: { strength: 0.24, threshold: 0.94, radius: 0.6 },
-    grade: { vignette: 0.62, grain: 0.022, lift: 0.01, strength: 0.72 },
+    grade: {
+      vignette: 0.6,
+      grain: 0.02,
+      lift: 0.01,
+      strength: 0.72,
+      shadow: 0x2f4a6e,
+      highlight: 0xffe6bd,
+      saturation: 0.9,
+    },
     screenVignette: 0.28,
   },
 
-  /** Overcast snowfield — cold, flat, maximum contrast on the sculpts. */
+  /**
+   * A snowbound pass under the grey mountains: no sun disc at all, a sky closed
+   * over with cloud, and a near-monochrome field where the only warmth in the
+   * frame is the torches. The snowline sits low, so every range in shot is
+   * white above a third of its height — this is the map the mountains carry.
+   */
   frost: {
     id: "frost",
     label: "Frostfall",
-    note: "Snowlit overcast field — cold light, highest contrast",
+    note: "A snowbound pass — shut sky, white ranges, the torches the only warmth",
     exposure: 0.98,
-    background: 0xaebccb,
-    fog: { color: 0xbcc7d4, density: 0.012 },
+    background: 0xa8b6c6,
+    fog: { color: 0xbcc8d4, density: 0.0125 },
     environment: {
-      top: 0x8ea3bc,
-      bottom: 0xc3ccd6,
-      glow: 0x93a5b6,
-      warm: 0xdde5ee,
-      cool: 0xacbdd0,
+      top: 0x87a0bd,
+      bottom: 0xbfc9d5,
+      glow: 0x8fa3b8,
+      warm: 0xd9e3ee,
+      cool: 0xa6b9cf,
       intensity: 0.95,
     },
-    hemi: { sky: 0xc3d4e8, ground: 0x969fa9, intensity: 1.2 },
-    keyLight: { color: 0xeef4ff, intensity: 2.15, position: [7, 16, -6] },
-    fill: { color: 0xb6c3d3, intensity: 0.75, position: [-8, 7, 9] },
+    haze: { color: 0xc4cfdb, strength: 0.8 },
+    hemi: { sky: 0xc0d2e8, ground: 0x8f99a6, intensity: 1.2 },
+    keyLight: { color: 0xeaf2ff, intensity: 2.15, position: [7, 16, -6] },
+    fill: { color: 0xb2c1d4, intensity: 0.75, position: [-8, 7, 9] },
     lamp: { color: 0xe6eeff, intensity: 0.28 },
     torch: { intensity: 0.7, flame: 0.9 },
-    stone: { floor: 0xa3aab3, dais: 0xadb3bb, pillar: 0x9aa1aa, wall: 0x7c858e, rubble: 0x8b9299 },
+    stone: { floor: 0x9ba3ae, dais: 0xa5adb8, pillar: 0x929ba7, wall: 0x747d88, rubble: 0x838c96 },
     window: { color: 0xf2f7ff, opacity: 0.5 },
-    shaft: { color: 0xcfdcee, opacity: 0.14 },
-    dust: { color: 0xf2f8ff, opacity: 0.4 },
-    sky: { zenith: 0x74889f, horizon: 0xc0c9d3, ember: 0x7c8c9d },
-    ridge: [1.55, 1.65, 1.85],
-    ground: 0xb0b7c0,
+    shaft: { color: 0xd2dff0, opacity: 0.16 },
+    dust: { color: 0xf2f8ff, opacity: 0.42 },
+    sky: { zenith: 0x5f7796, horizon: 0xc2cdd9, ember: 0x8fa2b6 },
+    /** Overcast: the sun is a bright quarter of sky, never a disc. */
+    sun: { color: 0xe8f1ff, size: 0, glow: 0.3 },
+    cloud: { amount: 0.78, color: 0xd6dfea, speed: 0.006 },
+    snowline: 0.28,
+    ridge: [1.02, 1.05, 1.1],
+    ground: 0xacb4be,
+    groundAlt: 0xc6d1dc,
     fire: 0.85,
     smoke: { color: 0xa5abb3, opacity: 0.24 },
     ash: { color: 0xd7e2f0, opacity: 0.38 },
@@ -306,51 +434,70 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     /** Snow-laden firs, drifts banked against everything, and steady snowfall. */
     scenery: {
       ...NO_SCENERY,
-      grove: { kind: "pine", density: 1, inner: 27, trunk: 0x3f3a36, foliage: 0x2f4149 },
-      rocks: { kind: "drift", density: 1, color: 0xdfe8f3 },
-      monoliths: { kind: "menhir", stone: 0x93a0ad, accent: 0xd8e4f0 },
+      grove: { kind: "pine", density: 1, inner: 27, trunk: 0x3d3934, foliage: 0x2e3f47 },
+      rocks: { kind: "drift", density: 1, color: 0xdde7f2 },
+      monoliths: { kind: "menhir", stone: 0x8f9caa, accent: 0xd4e0ee },
       puddles: { enabled: true, color: 0x9fb6cc, opacity: 0.5 },
       weather: { kind: "snow", density: 1, color: 0xf2f8ff, opacity: 0.75 },
     },
     board: { light: 0xdae2ec, dark: 0x2f3644, base: 0x4b5260, border: 0xb3bdc8, trim: 0x77869a },
     bloom: { strength: 0.28, threshold: 0.9, radius: 0.62 },
-    grade: { vignette: 0.52, grain: 0.018, lift: 0.008, strength: 0.66 },
+    grade: {
+      vignette: 0.52,
+      grain: 0.018,
+      lift: 0.008,
+      strength: 0.66,
+      shadow: 0x33506e,
+      highlight: 0xe6f0ff,
+      saturation: 0.82,
+    },
     screenVignette: 0.22,
   },
 
   /**
-   * Noon over a desert fortress: the harshest light on the board. The sky is
-   * almost white at the horizon and the stone is bleached ochre, so both armies
-   * read as silhouettes first and colour second — the opposite problem to dusk,
-   * and the reason the tiles are pushed to the darkest brown of any map.
+   * Noon over a fortress in the southern waste: the harshest light on the board.
+   * The sky is almost white at the horizon and the stone is bleached to bone, so
+   * both armies read as silhouettes first and colour second — the opposite
+   * problem to dusk, and the reason the tiles are pushed to the darkest brown of
+   * any map.
+   *
+   * The yellow has been taken out of the sand deliberately. Real desert at noon
+   * is bone and dust-rose with a violet-blue shadow, not butter; the old lemon
+   * cast was the one thing on this map that could not be photographed.
    */
   sands: {
     id: "sands",
     label: "Dune Bastion",
-    note: "Blinding desert noon — bleached ochre stone, hard shadows, dust in the air",
-    exposure: 0.88,
-    background: 0xc9b98c,
-    fog: { color: 0xd9c79c, density: 0.0115 },
+    note: "Blinding southern noon — bone stone, hard violet shadows, sand in the air",
+    exposure: 0.9,
+    background: 0xc4b490,
+    fog: { color: 0xd2c2a2, density: 0.0118 },
     environment: {
-      top: 0x5f92c6,
-      bottom: 0xb99f6c,
-      glow: 0xf0d69a,
-      warm: 0xfff0cc,
-      cool: 0xbfae86,
+      top: 0x5d86b4,
+      bottom: 0xb5a077,
+      glow: 0xecd6a4,
+      warm: 0xfff0d2,
+      cool: 0xbcae8e,
       intensity: 0.98,
     },
-    hemi: { sky: 0xbdd2e6, ground: 0x9c8455, intensity: 1.05 },
-    keyLight: { color: 0xfff4d6, intensity: 2.75, position: [2, 20, 3] },
-    fill: { color: 0xd8bd8a, intensity: 0.68, position: [-8, 5, -8] },
+    haze: { color: 0xd8caa8, strength: 0.7 },
+    hemi: { sky: 0xbacfe4, ground: 0x968157, intensity: 1.05 },
+    keyLight: { color: 0xfff2d8, intensity: 2.75, position: [2, 20, 3] },
+    fill: { color: 0xd2bb92, intensity: 0.68, position: [-8, 5, -8] },
     lamp: { color: 0xfff2da, intensity: 0.26 },
     torch: { intensity: 0.3, flame: 0.45 },
-    stone: { floor: 0xa89468, dais: 0xb29e72, pillar: 0xa08c62, wall: 0x7d6c4c, rubble: 0x8d7a56 },
+    stone: { floor: 0xa39268, dais: 0xac9d74, pillar: 0x9b8b64, wall: 0x776a4e, rubble: 0x877858 },
     window: { color: 0xfff4d2, opacity: 0.46 },
-    shaft: { color: 0xffe9b8, opacity: 0.2 },
+    shaft: { color: 0xffe9b8, opacity: 0.22 },
     dust: { color: 0xffeec4, opacity: 0.44 },
-    sky: { zenith: 0x3f7fc0, horizon: 0xecdcaa, ember: 0xd8a961 },
-    ridge: [1.4, 1.5, 1.3],
-    ground: 0xb59a63,
+    sky: { zenith: 0x3a6ea8, horizon: 0xe4d6b2, ember: 0xd0a874 },
+    /** High and small: a noon sun is a hot pinhole, not a soft lamp. */
+    sun: { color: 0xfff6de, size: 0.0035, glow: 0.85 },
+    cloud: { amount: 0.16, color: 0xf4ecd8, speed: 0.002 },
+    snowline: 1,
+    ridge: [1.04, 1, 0.94],
+    ground: 0xb09a6a,
+    groundAlt: 0xc2ad7d,
     fire: 0.45,
     smoke: { color: 0xb0a184, opacity: 0.2 },
     ash: { color: 0xf0dca8, opacity: 0.42 },
@@ -362,50 +509,68 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     /** Date palms, dune backs, two obelisks, and sand coming off the crests. */
     scenery: {
       ...NO_SCENERY,
-      grove: { kind: "palm", density: 0.7, inner: 25, trunk: 0x7d6a48, foliage: 0x7f8a45 },
-      rocks: { kind: "dune", density: 1, color: 0xc4a973 },
-      monoliths: { kind: "obelisk", stone: 0xbda87a, accent: 0xe0c069 },
+      grove: { kind: "palm", density: 0.7, inner: 25, trunk: 0x796648, foliage: 0x788245 },
+      rocks: { kind: "dune", density: 1, color: 0xc0a574 },
+      monoliths: { kind: "obelisk", stone: 0xb8a37a, accent: 0xd8b96a },
       weather: { kind: "sand", density: 0.85, color: 0xf0dca8, opacity: 0.34 },
     },
     board: { light: 0xe9dcb6, dark: 0x453a2a, base: 0x6d5c3d, border: 0xd1b87c, trim: 0xc08c36 },
     bloom: { strength: 0.3, threshold: 0.9, radius: 0.58 },
-    grade: { vignette: 0.48, grain: 0.02, lift: 0.008, strength: 0.62 },
+    grade: {
+      vignette: 0.48,
+      grain: 0.02,
+      lift: 0.008,
+      strength: 0.62,
+      shadow: 0x3c5a7a,
+      highlight: 0xffeec6,
+      saturation: 0.86,
+    },
     screenVignette: 0.2,
   },
 
   /**
-   * A grey downpour on the ramparts. Everything is desaturated and wet: the one
+   * A downpour on the deeping wall. Everything is desaturated and wet: the one
    * map where the torches are losing, which is what the sputtering flame and the
    * cold key light are for. The falling motes are rain, not ash.
+   *
+   * Near-monochrome on purpose — the sky is shut, the ranges are almost gone in
+   * the haze, and the only colour left in the frame is the blue in the shadows
+   * and whatever the fires can still hold.
    */
   storm: {
     id: "storm",
     label: "Stormwatch",
-    note: "Rain-lashed rampart — slate light, wet stone, torches barely holding",
+    note: "Rain on the deeping wall — shut sky, wet stone, torches barely holding",
     exposure: 1,
-    background: 0x5c6672,
-    fog: { color: 0x6d7682, density: 0.0165 },
+    background: 0x525c6a,
+    fog: { color: 0x646e7c, density: 0.017 },
     environment: {
-      top: 0x5a667b,
-      bottom: 0x53524c,
-      glow: 0x7f8999,
-      warm: 0xcbd1d8,
-      cool: 0x7e91a9,
+      top: 0x4e5b70,
+      bottom: 0x4b4a46,
+      glow: 0x76808f,
+      warm: 0xc2c9d2,
+      cool: 0x74879f,
       intensity: 0.86,
     },
-    hemi: { sky: 0x90a0b3, ground: 0x4e5148, intensity: 0.92 },
-    keyLight: { color: 0xd9e3ef, intensity: 1.75, position: [-6, 17, -8] },
-    fill: { color: 0x7e8c9d, intensity: 0.72, position: [9, 6, 8] },
+    haze: { color: 0x6f7986, strength: 0.92 },
+    hemi: { sky: 0x8798ac, ground: 0x494c46, intensity: 0.92 },
+    keyLight: { color: 0xd2dcea, intensity: 1.75, position: [-6, 17, -8] },
+    fill: { color: 0x76849a, intensity: 0.72, position: [9, 6, 8] },
     lamp: { color: 0xe0e9f3, intensity: 0.32 },
     /** Wind-beaten: strong light, small flame. */
     torch: { intensity: 0.9, flame: 0.6 },
-    stone: { floor: 0x6f7278, dais: 0x787b81, pillar: 0x676a70, wall: 0x494c51, rubble: 0x585b60 },
+    stone: { floor: 0x686c73, dais: 0x71757c, pillar: 0x61656c, wall: 0x44474d, rubble: 0x53565c },
     window: { color: 0xd9e5f3, opacity: 0.42 },
     shaft: { color: 0xbac9db, opacity: 0.12 },
     dust: { color: 0xcad7e5, opacity: 0.46 },
-    sky: { zenith: 0x3b4553, horizon: 0x8c96a1, ember: 0x606b79 },
-    ridge: [1.1, 1.16, 1.32],
-    ground: 0x5c6058,
+    sky: { zenith: 0x2f3947, horizon: 0x7e8894, ember: 0x56606e },
+    /** No disc gets through this: only a lighter quarter of cloud. */
+    sun: { color: 0xc8d4e4, size: 0, glow: 0.22 },
+    cloud: { amount: 0.92, color: 0x8b95a2, speed: 0.011 },
+    snowline: 1,
+    ridge: [0.97, 1, 1.06],
+    ground: 0x565a54,
+    groundAlt: 0x62675e,
     fire: 0.7,
     smoke: { color: 0x7b8189, opacity: 0.3 },
     /** Rain, not cinders. */
@@ -417,46 +582,65 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     /** Stripped wind-bent trees, wet boulders, standing water, driving rain. */
     scenery: {
       ...NO_SCENERY,
-      grove: { kind: "bare", density: 1, inner: 26, trunk: 0x3b3a36, foliage: 0x3b3a36 },
-      rocks: { kind: "boulder", density: 0.8, color: 0x5f646b },
-      monoliths: { kind: "menhir", stone: 0x596068, accent: 0x8f9aa6 },
+      grove: { kind: "bare", density: 1, inner: 26, trunk: 0x393834, foliage: 0x393834 },
+      rocks: { kind: "boulder", density: 0.8, color: 0x5b6067 },
+      monoliths: { kind: "menhir", stone: 0x565d65, accent: 0x8a95a1 },
       puddles: { enabled: true, color: 0x76889c, opacity: 0.78 },
       weather: { kind: "rain", density: 1, color: 0xd6e4f5, opacity: 0.5 },
     },
     board: { light: 0xd3d9df, dark: 0x2a313b, base: 0x464c54, border: 0xa9b3bd, trim: 0x6d7b89 },
     bloom: { strength: 0.34, threshold: 0.86, radius: 0.66 },
-    grade: { vignette: 0.82, grain: 0.03, lift: 0.014, strength: 0.84 },
+    grade: {
+      vignette: 0.82,
+      grain: 0.03,
+      lift: 0.014,
+      strength: 0.84,
+      shadow: 0x243a58,
+      highlight: 0xd6e2f2,
+      saturation: 0.72,
+    },
     screenVignette: 0.36,
   },
 
-  /** The original siege at dusk — dramatic, dark, torch-lit. */
+  /**
+   * The siege at dusk — the ash country. Dramatic, dark, torch-lit, and the one
+   * map where the light in the sky is *fire* rather than sun: a broad red disc
+   * burning through the smoke, ash banks lit from underneath by it, and a
+   * horizon still glowing from whatever is alight below it.
+   */
   dusk: {
     id: "dusk",
     label: "Siege at Dusk",
-    note: "The original torch-lit hall — moody and dark",
+    note: "The ash country — a burning horizon, soot overhead, torchlight holding the walls",
     exposure: 1.05,
-    background: 0x07080c,
-    fog: { color: 0x171310, density: 0.019 },
+    background: 0x07080b,
+    fog: { color: 0x14120f, density: 0.019 },
     environment: {
-      top: 0x141c2c,
-      bottom: 0x140d08,
-      glow: 0x8a4a1e,
-      warm: 0xffb066,
-      cool: 0x2e4a8a,
+      top: 0x121a29,
+      bottom: 0x120c07,
+      glow: 0x8a4218,
+      warm: 0xffa855,
+      cool: 0x2b467f,
       intensity: 0.75,
     },
-    hemi: { sky: 0x4a5f8a, ground: 0x140f0b, intensity: 0.6 },
-    keyLight: { color: 0xffd7a1, intensity: 2.7, position: [-9, 15, 7] },
-    fill: { color: 0x5f7fbf, intensity: 0.55, position: [8, 6, -9] },
+    haze: { color: 0x231a15, strength: 0.55 },
+    hemi: { sky: 0x44598a, ground: 0x120e0a, intensity: 0.6 },
+    keyLight: { color: 0xffd39a, intensity: 2.7, position: [-9, 15, 7] },
+    fill: { color: 0x5c7cbc, intensity: 0.55, position: [8, 6, -9] },
     lamp: { color: 0xffe6c4, intensity: 0.3 },
     torch: { intensity: 1, flame: 1 },
-    stone: { floor: 0x6a6155, dais: 0x5b5449, pillar: 0x554e44, wall: 0x2e2a26, rubble: 0x3b352d },
+    stone: { floor: 0x655d52, dais: 0x575046, pillar: 0x524b42, wall: 0x2c2824, rubble: 0x393328 },
     window: { color: 0xffd9a6, opacity: 0.55 },
     shaft: { color: 0xffffff, opacity: 0.7 },
     dust: { color: 0xffe6bd, opacity: 0.5 },
-    sky: { zenith: 0x0a0d1a, horizon: 0x2a1c16, ember: 0xa8481a },
-    ridge: [1, 1, 1],
-    ground: 0x6b6055,
+    sky: { zenith: 0x080b16, horizon: 0x2a1a13, ember: 0xb44a16 },
+    /** Twice the disc of any other map, and the only one burning rather than shining. */
+    sun: { color: 0xff9a44, size: 0.012, glow: 1 },
+    cloud: { amount: 0.66, color: 0x2a2320, speed: 0.008 },
+    snowline: 1,
+    ridge: [1, 0.97, 0.94],
+    ground: 0x655b50,
+    groundAlt: 0x554b41,
     fire: 1,
     smoke: { color: 0x6b6560, opacity: 0.3 },
     ash: { color: 0xffb066, opacity: 0.55 },
@@ -472,7 +656,15 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
     },
     board: { light: 0xf6efe0, dark: 0x2b2f38, base: 0x3b342b, border: 0xbfae8e, trim: 0x8a6a33 },
     bloom: { strength: 0.62, threshold: 0.72, radius: 0.75 },
-    grade: { vignette: 1.05, grain: 0.045, lift: 0.02, strength: 1 },
+    grade: {
+      vignette: 1.05,
+      grain: 0.045,
+      lift: 0.02,
+      strength: 1,
+      shadow: 0x1e3560,
+      highlight: 0xffb877,
+      saturation: 0.88,
+    },
     screenVignette: 0.55,
   },
 };
@@ -480,4 +672,13 @@ export const ARENA_LOOKS: Record<ArenaTheme, ArenaLook> = {
 /** Brightest hall first, darkest last — the picker reads as a dimmer. */
 export const ARENA_ORDER: ArenaTheme[] = ["jungle", "dawn", "sands", "frost", "storm", "dusk"];
 
-export const DEFAULT_ARENA: ArenaTheme = "jungle";
+/**
+ * The map the game opens on.
+ *
+ * The arena is *not* remembered between visits — the shell boots every session
+ * on this one — and the arcade's online seat never shows the muster picker at
+ * all, so for most players this is not a default so much as the only map they
+ * will ever see. Dawn Court has the establishing shot: a low warm sun, ranges
+ * stacked in the haze behind the camps, and the clearest read of both armies.
+ */
+export const DEFAULT_ARENA: ArenaTheme = "dawn";
