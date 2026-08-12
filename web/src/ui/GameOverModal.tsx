@@ -28,6 +28,12 @@ interface GameOverModalProps {
   pgn: string;
   playerColor: Faction;
   versusComputer: boolean;
+  /**
+   * An online duel: the verdict reads from the player's side (VICTORY /
+   * DEFEAT), and there is no rematch button — the opponent has to agree to
+   * another game, and that negotiation lives with the host, not the board.
+   */
+  online?: boolean;
   moveCount: number;
   showcase?: ShowcaseOutcome | null;
   onRematch: () => void;
@@ -56,6 +62,7 @@ export function GameOverModal({
   pgn,
   playerColor,
   versusComputer,
+  online = false,
   moveCount,
   showcase,
   onRematch,
@@ -64,7 +71,10 @@ export function GameOverModal({
   const [copied, setCopied] = useState(false);
 
   const draw = result.winner === null;
-  const playerWon = versusComputer && result.winner === playerColor;
+  // Online reads like a duel against the machine: the player has a side, so
+  // the verdict is theirs — not a neutral report of which army won.
+  const hasSide = versusComputer || online;
+  const playerWon = hasSide && result.winner === playerColor;
   const headline = draw
     ? "A DRAW"
     : showcase
@@ -73,7 +83,7 @@ export function GameOverModal({
         : "OBSIDIAN TRIUMPHS"
       : playerWon
         ? "VICTORY"
-        : versusComputer
+        : hasSide
           ? "DEFEAT"
           : result.winner === "w"
             ? "IVORY TRIUMPHS"
@@ -136,10 +146,16 @@ export function GameOverModal({
           ) : null}
 
           <div className="mt-5 grid grid-cols-2 gap-2">
-            <button type="button" className="mc-btn mc-btn-primary flex items-center justify-center gap-2" onClick={onRematch}>
-              {showcase ? <RotateCw size={15} /> : <Swords size={15} />} {showcase ? "Another duel" : "Rematch"}
-            </button>
-            <button type="button" className="mc-btn flex items-center justify-center gap-2" onClick={onMenu}>
+            {online ? null : (
+              <button type="button" className="mc-btn mc-btn-primary flex items-center justify-center gap-2" onClick={onRematch}>
+                {showcase ? <RotateCw size={15} /> : <Swords size={15} />} {showcase ? "Another duel" : "Rematch"}
+              </button>
+            )}
+            <button
+              type="button"
+              className={`mc-btn flex items-center justify-center gap-2 ${online ? "col-span-2" : ""}`}
+              onClick={onMenu}
+            >
               <Home size={15} /> Great hall
             </button>
           </div>

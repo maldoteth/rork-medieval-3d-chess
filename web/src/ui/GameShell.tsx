@@ -9,7 +9,8 @@ import {
   PREMOVE_DEPTH_CHOICES,
   THINK_FLOOR_CHOICES,
 } from "../core/gameController";
-import type { Faction, LedgerMove, PieceKind } from "../core/types";
+import { isOnlineHost, onHostMessage, postToHost, type HostStart } from "../core/hostBridge";
+import type { EndReason, Faction, LedgerMove, PieceKind } from "../core/types";
 import { Clapperboard } from "lucide-react";
 import { ARENA_LOOKS, DEFAULT_ARENA } from "../scene/arena";
 import { detectQualityPreset, type QualityPreset } from "../scene/quality";
@@ -240,6 +241,14 @@ export function GameShell() {
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [progress, setProgress] = useState(0);
+  /**
+   * The host asked for an online session in the frame URL. The local menu is
+   * withheld for the whole visit: a player waiting on matchmaking must not be
+   * able to wander into a duel against the machine while the summons is out.
+   */
+  const onlineHost = useMemo(() => isOnlineHost(), []);
+  /** The online match under way, when the host has started one. */
+  const [online, setOnline] = useState<HostStart | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [introPlaying, setIntroPlaying] = useState(false);
   const [attract, setAttract] = useState(false);
@@ -398,12 +407,14 @@ export function GameShell() {
   }, [controller, phase, showSettings]);
 
   useEffect(() => {
-    if (phase !== "menu" || attract || introPlaying) return;
+    // No attract loop while the frame is held for an online match: the AI vs
+    // AI showcase would be playing when the opponent's first move arrived.
+    if (phase !== "menu" || attract || introPlaying || onlineHost) return;
     scheduleAttract();
     return () => {
       if (attractTimer.current) clearTimeout(attractTimer.current);
     };
-  }, [phase, attract, introPlaying, scheduleAttract]);
+  }, [phase, attract, introPlaying, onlineHost, scheduleAttract]);
 
   // ------------------------------------------------------------------ actions
   const startMatch = useCallback(
@@ -440,8 +451,106 @@ export function GameShell() {
     engine?.setShowcase(false);
     engine?.setCameraPreset("cinematic");
     setCinema(false);
+    setOnline(null);
     setPhase("menu");
   }, [controller]);
+
+  // --------------------------------------------------------- online opponent
+  /**
+   * Begins the match the host has arranged. Mirrors `startMatch`, but the
+   * configuration arrives over the bridge rather than from the menu: the host
+   * has already found the opponent, assigned the colours and set the clock.
+   */
+  const startOnline = useCallback(
+    (config: HostStart) => {
+      stopAttract();
+      void audio.unlock();
+      audio.blip("press");
+      const engine = engineRef.current;
+      engine?.setAttract(false);
+      engine?.setInteractive(true);
+      engine?.setShowcase(false);
+      engine?.setCameraPreset(config.color === "b" ? "black" : "white");
+      controller.start({
+        mode: "online",
+        // Unused online — the opponent is a person — but the field is required.
+        difficulty: "medium",
+        playerColor: config.color,
+        clockMinutes: config.clockMs === null ? null : config.clockMs / 60_000,
+        startFen: config.fen,
+      });
+      setOnline(config);
+      setPhase("playing");
+    },
+    [controller, stopAttract],
+  );
+
+  /**
+   * The bridge itself: what the host may tell the board, and what the board
+   * reports back. Registered once; every handler reads the live snapshot so a
+   * message for a mode the game is no longer in falls through harmlessly.
+   */
+  useEffect(() => {
+    const offHost = onHostMessage((message) => {
+      if (message.type === "start") {
+        startOnline({
+          color: message.color === "b" ? "b" : "w",
+          clockMs: typeof message.clockMs === "number" && message.clockMs > 0 ? message.clockMs : null,
+          fen: typeof message.fen === "string" && message.fen.length > 0 ? message.fen : undefined,
+          opponent: typeof message.opponent === "string" ? message.opponent : undefined,
+        });
+        return;
+      }
+      if (message.type === "opponent-move") {
+        if (typeof message.from !== "string" || typeof message.to !== "string") return;
+        const promotion = typeof message.promotion === "string" ? (message.promotion as PieceKind) : undefined;
+        void controller.applyRemoteMove(message.from, message.to, promotion).then((applied) => {
+          // A refusal means the boards have diverged. Tell the host what this
+          // board believes so it can restart the frame from the server's FEN.
+          if (!applied) postToHost({ type: "desync", fen: controller.getSnapshot().fen });
+        });
+        return;
+      }
+      if (message.type === "clock") {
+        if (typeof message.whiteMs === "number" && typeof message.blackMs === "number") {
+          controller.setServerClock(message.whiteMs, message.blackMs);
+        }
+        return;
+      }
+      if (message.type === "result") {
+        const winner = message.winner === "w" || message.winner === "b" ? message.winner : null;
+        const reason = typeof message.reason === "string" ? (message.reason as EndReason) : "draw";
+        controller.finishFromServer({ winner, reason });
+      }
+    });
+
+    const offMove = controller.on("move", (event) => {
+      const current = controller.getSnapshot();
+      if (current.mode !== "online" || event.color !== current.playerColor) return;
+      // The snapshot is rebuilt before the move event fires, so its FEN is the
+      // position AFTER this move — exactly what the match server validates.
+      postToHost({
+        type: "move",
+        from: event.from,
+        to: event.to,
+        promotion: event.promotion,
+        san: event.san,
+        fen: current.fen,
+      });
+    });
+
+    const offOver = controller.on("gameover", (result) => {
+      if (controller.getSnapshot().mode !== "online") return;
+      postToHost({ type: "game-ended", winner: result.winner, reason: result.reason });
+    });
+
+    postToHost({ type: "bridge-ready" });
+    return () => {
+      offHost();
+      offMove();
+      offOver();
+    };
+  }, [controller, startOnline]);
 
   // -------------------------------------------------------- showcase controls
   const handleTogglePause = useCallback(() => {
@@ -487,6 +596,10 @@ export function GameShell() {
 
   const handleResign = useCallback(() => {
     audio.blip("deny");
+    // Online, the banner is lowered on the server too — the local finish is
+    // immediate (a resignation is always accepted) but the verdict that pays
+    // out is the host's.
+    if (controller.getSnapshot().mode === "online") postToHost({ type: "resign" });
     controller.resign();
   }, [controller]);
 
@@ -644,14 +757,18 @@ export function GameShell() {
         ) : null}
 
         {phase === "menu" && !introPlaying ? (
-          <MainMenu
-            onStart={startMatch}
-            onOpenSettings={() => setShowSettings(true)}
-            muster={{ skins: settings.skins, arena: settings.arena }}
-            onMuster={handleMuster}
-            attract={attract}
-            onInteract={stopAttract}
-          />
+          onlineHost ? (
+            <OnlineWaiting opponent={online?.opponent ?? null} />
+          ) : (
+            <MainMenu
+              onStart={startMatch}
+              onOpenSettings={() => setShowSettings(true)}
+              muster={{ skins: settings.skins, arena: settings.arena }}
+              onMuster={handleMuster}
+              attract={attract}
+              onInteract={stopAttract}
+            />
+          )
         ) : null}
 
         {phase === "playing" && !cinema ? (
@@ -745,6 +862,7 @@ export function GameShell() {
             pgn={snapshot.pgn}
             playerColor={snapshot.playerColor}
             versusComputer={snapshot.mode === "ai"}
+            online={snapshot.mode === "online"}
             moveCount={snapshot.history.length}
             showcase={
               snapshot.demo
@@ -783,6 +901,24 @@ export function GameShell() {
           </div>
         ) : null}
       </div>
+    </div>
+  );
+}
+
+/**
+ * What stands in for the menu while the host is matchmaking. There is nothing
+ * to click: the host owns the lobby, and the board comes alive on its own the
+ * moment the `start` message lands.
+ */
+function OnlineWaiting({ opponent }: { opponent: string | null }) {
+  return (
+    <div className="mc-fade pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+      <p className="mc-display text-[0.62rem] tracking-[0.5em] text-[#a89268]">A CHALLENGE IS SWORN</p>
+      <h1 className="mc-display mc-title-glow text-4xl text-[#f4e3bd] sm:text-5xl">KING&apos;S GAMBIT</h1>
+      <div className="mc-rule w-64" />
+      <p className="mc-pulse text-sm italic text-[#c5b28d]">
+        {opponent ? `${opponent} approaches the board…` : "Awaiting your opponent…"}
+      </p>
     </div>
   );
 }

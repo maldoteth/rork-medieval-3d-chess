@@ -29,6 +29,13 @@ export interface StartOptions {
   clockMinutes: number | null;
   /** Only read when `mode === "demo"`. */
   demo?: DemoOptions;
+  /**
+   * Board to start from instead of the initial position. An online match may
+   * open from a set position (the house variant starts every duel from the
+   * King's Gambit), and a player who reloads mid-match rejoins from wherever
+   * the fight has got to.
+   */
+  startFen?: string;
 }
 
 export const DEFAULT_DEMO: DemoOptions = {
@@ -595,7 +602,7 @@ export class GameController extends Emitter<ControllerEvents> {
     this.paused = false;
     if (options.mode !== "demo" || this.options.mode !== "demo") this.demoRound = 1;
     this.options = options.mode === "demo" ? { ...options, demo: options.demo ?? DEFAULT_DEMO } : options;
-    this.chess = new Chess();
+    this.chess = options.startFen ? new Chess(options.startFen) : new Chess();
     this.status = "playing";
     this.result = null;
     this.thinking = false;
@@ -864,12 +871,63 @@ export class GameController extends Emitter<ControllerEvents> {
 
   resign(): void {
     if (this.status !== "playing") return;
-    const loser = this.options.mode === "ai" ? this.options.playerColor : (this.chess.turn() as Faction);
+    const mine = this.options.mode === "ai" || this.options.mode === "online";
+    const loser = mine ? this.options.playerColor : (this.chess.turn() as Faction);
     this.finish({ winner: loser === "w" ? "b" : "w", reason: "resignation" });
+  }
+
+  // ---------------------------------------------------------- online opponent
+
+  /**
+   * Plays the opponent's move, exactly as `maybeRunEngine` plays the
+   * computer's. The move has already been validated by the match server, so a
+   * refusal here means the two boards have diverged — that is surfaced as a
+   * failure (`false`) rather than swallowed, and the host is expected to
+   * restart from the server's FEN.
+   *
+   * Arrival can race the local move's animation: the wire does not wait for
+   * the cinematics. The move holds until the board is handed back rather than
+   * landing mid-swing.
+   */
+  async applyRemoteMove(from: SquareId, to: SquareId, promotion?: PieceKind): Promise<boolean> {
+    if (this.options.mode !== "online" || this.status !== "playing") return false;
+    if (this.chess.turn() === this.options.playerColor) return false;
+    const generation = this.generation;
+    while (this.busy) {
+      await wait(50);
+      if (generation !== this.generation || this.status !== "playing") return false;
+    }
+    return this.play(from, to, promotion);
+  }
+
+  /**
+   * The server's reading of both clocks, sent after every confirmed move.
+   * The local countdown keeps ticking between syncs so the display is smooth;
+   * this snaps it back to the truth whenever the truth is available.
+   */
+  setServerClock(whiteMs: number, blackMs: number): void {
+    if (this.options.mode !== "online" || !this.clock.enabled) return;
+    this.clock.whiteMs = Math.max(0, whiteMs);
+    this.clock.blackMs = Math.max(0, blackMs);
+    this.lastTickAt = performance.now();
+    this.publish();
+  }
+
+  /**
+   * A verdict the board cannot reach on its own: a flag fall the server
+   * measured, the opponent resigning or abandoning. Checkmate found locally
+   * is already final (both boards play the same moves), so a duplicate
+   * verdict for a finished game is dropped.
+   */
+  finishFromServer(result: GameResult): void {
+    if (this.options.mode !== "online" || this.status !== "playing") return;
+    this.finish(result);
   }
 
   /** Undo one ply (hotseat) or a full move pair (vs computer). */
   undo(): boolean {
+    // No takebacks against a live opponent — the move is already on the wire.
+    if (this.options.mode === "online") return false;
     if (this.status === "over") {
       this.status = "playing";
       this.result = null;
@@ -893,7 +951,8 @@ export class GameController extends Emitter<ControllerEvents> {
   private async maybeRunEngine(): Promise<void> {
     if (this.status !== "playing" || this.paused) return;
     const mode = this.options.mode;
-    if (mode === "hotseat") return;
+    // Online: the reply comes over the wire, not from the worker.
+    if (mode === "hotseat" || mode === "online") return;
     const turn = this.chess.turn() as Faction;
     if (mode === "ai" && turn === this.options.playerColor) return;
     if (this.thinking) return;
@@ -964,6 +1023,14 @@ export class GameController extends Emitter<ControllerEvents> {
     else this.clock.blackMs = Math.max(0, this.clock.blackMs - delta);
 
     if (this.clock.whiteMs === 0 || this.clock.blackMs === 0) {
+      // Online, the server's clock is the clock. This one is a display that
+      // happens to tick; a flag fall is claimed against the server and the
+      // verdict arrives as a result message, so the board holds at 0:00
+      // rather than calling the game on its own reckoning.
+      if (this.options.mode === "online") {
+        this.publish();
+        return;
+      }
       const loser: Faction = this.clock.whiteMs === 0 ? "w" : "b";
       this.finish({ winner: loser === "w" ? "b" : "w", reason: "timeout" });
       return;
@@ -1041,7 +1108,8 @@ export class GameController extends Emitter<ControllerEvents> {
         !this.thinking &&
         !this.busy &&
         this.options.mode !== "attract" &&
-        this.options.mode !== "demo",
+        this.options.mode !== "demo" &&
+        this.options.mode !== "online",
       demo: this.options.mode === "demo" ? { ...(this.options.demo ?? DEFAULT_DEMO) } : null,
       paused: this.paused,
       demoRound: this.demoRound,
