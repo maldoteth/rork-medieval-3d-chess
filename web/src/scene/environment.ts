@@ -295,7 +295,20 @@ export class CastleHall {
     keystoneGeo.dispose();
 
     const colonnade = new THREE.Mesh(this.track(weldParts(parts)), stone);
-    colonnade.castShadow = true;
+    // Deliberately NOT a shadow caster, and merging is exactly why.
+    //
+    // The key light's shadow camera is a ±9 m box around the board — it does not
+    // reach the ring at 12.5 m. While each column was its own object, three
+    // frustum-culled most of them out of the shadow pass on their own bounding
+    // spheres and the courtyard stayed clean. Merged, the ring is a single
+    // object whose bounding sphere spans the whole hall, so it always
+    // intersects: every column started casting at once, and the shadows ran to
+    // the edge of the frustum and then stopped dead in a straight diagonal
+    // across the paving. Widening the shadow camera to cover the ring would
+    // spread the same texels over four times the area and soften every shadow
+    // the figures throw, which is the one thing on the board that has to stay
+    // crisp. So the ring keeps its silhouette and casts nothing.
+    colonnade.castShadow = false;
     colonnade.receiveShadow = true;
     this.group.add(colonnade);
 
@@ -367,7 +380,10 @@ export class CastleHall {
     for (const [centre, span, height] of ruins) wallArc(centre, span, height);
 
     const wall = new THREE.Mesh(this.track(weldParts(wallParts)), wallMat);
-    wall.castShadow = true;
+    // Same reasoning as the colonnade, and worse: this one is twenty metres
+    // tall at a radius of seventeen, so once merged it laid half the courtyard
+    // out in shadow — with the same hard cut where the shadow camera ends.
+    wall.castShadow = false;
     wall.receiveShadow = true;
     this.group.add(wall);
 
@@ -453,7 +469,9 @@ export class CastleHall {
       const surround = new THREE.Mesh(revealGeo, wallMat);
       surround.position.set(Math.cos(angle) * 16.02, 11.5, Math.sin(angle) * 16.02);
       surround.lookAt(0, 11.5, 0);
-      surround.castShadow = true;
+      // Eleven metres up and sixteen out: nothing it could cast onto is inside
+      // the shadow camera, so casting is pure cost.
+      surround.castShadow = false;
       surround.receiveShadow = true;
       this.group.add(surround);
 
@@ -537,7 +555,10 @@ export class CastleHall {
     });
 
     const braziers = new THREE.Mesh(this.track(weldParts(iron)), bracketMat);
-    braziers.castShadow = true;
+    // Merged into one object, the four stands straddle the shadow camera's edge
+    // and would draw the same clipped shadow the colonnade did. They stood as
+    // four separate meshes when this last looked right; keep that look.
+    braziers.castShadow = false;
     this.group.add(braziers);
   }
 
